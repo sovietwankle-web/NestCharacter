@@ -1,0 +1,44 @@
+{
+  "samples_per_class": 50,
+  "train_ratio": 0.7,
+  "val_ratio": 0.15,
+  "test_ratio": 0.15,
+  "classes": {
+    "layer_0": {
+      "layer": 0,
+      "train_samples": 35,
+      "val_samples": 7,
+      "test_samples": 8
+    },
+    "layer_1": {
+      "layer": 1,
+      "train_samples": 35,
+      "val_samples": 7,
+      "test_samples": 8
+    },
+    "layer_2": {
+      "layer": 2,
+      "train_samples": 35,
+      "val_samples": 7,
+      "test_samples": 8
+    },
+    "layer_3": {
+      "layer": 3,
+      "train_samples": 35,
+      "val_samples": 7,
+      "test_samples": 8
+    },
+    "layer_4": {
+      "layer": 4,
+      "train_samples": 35,
+      "val_samples": 7,
+      "test_samples": 8
+    },
+    "layer_5": {
+      "layer": 5,
+      "train_samples": 35,
+      "val_samples": 7,
+      "test_samples": 8
+    }
+  }
+}

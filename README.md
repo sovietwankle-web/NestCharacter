@@ -1,66 +1,136 @@
-# 多层嵌套字符生成和识别系统
+# 多层嵌套字符生成和识别系统 v3.0
 
-基于分形理论的嵌套字符生成与识别系统，能够生成不同层数、不同字符、不同大小比例的嵌套字，并通过分形分析识别嵌套字结构。
+基于深度学习和分形理论的综合嵌套字符识别系统，能够生成不同层数、不同字符、不同大小比例的嵌套字，并通过神经网络和分形分析识别嵌套字结构。
 
-## 功能特性
+## 🌟 核心功能
 
 ### 🎨 生成功能
-- **多层嵌套字生成**：支持2-5层嵌套结构
+- **多层嵌套字生成**：支持0-5层嵌套结构
 - **可配置参数**：字体大小、步长比例、颜色等
 - **批量生成**：一次生成多个不同配置的嵌套字
 - **API接口**：支持程序化调用
+- **训练数据生成**：自动生成大规模训练数据集
 
-### 🔍 识别功能  
+### 🔍 识别功能
 - **分形特征分析**：盒维数、空隙度、多重分形谱、自相似性
-- **嵌套结构检测**：基于分形理论判断是否为嵌套字
-- **层数估计**：自动估计嵌套层数
+- **深度学习识别**：基于CNN的嵌套层数分类
+- **嵌套结构检测**：综合分形和神经网络判断
+- **层数估计**：精确估计嵌套层数（0-5层）
 - **置信度评估**：提供检测结果的可信度
 
+### 🔧 变换恢复功能
+- **线性变换检测**：自动检测旋转、缩放、翻转等变换
+- **逆变换恢复**：将变换后的图像恢复到正常状态
+- **对抗OCR检测**：识别和恢复用于规避OCR的变换
+
+### 📊 高斯金字塔分析
+- **多尺度分析**：构建5层高斯金字塔
+- **边缘密度计算**：计算各层的局部边缘密度
+- **梯度分析**：提取各层的梯度特征
+- **字符大小估计**：基于梯度估计字符尺寸
+
+### 📦 OCR框生成
+- **智能框选**：基于梯度和字符大小生成OCR检测框
+- **自适应调整**：根据金字塔分析选择最优层级
+- **框合并优化**：自动合并重叠的检测框
+
 ### ⚡ 性能优化
-- **避免传统池化层**：使用分形分析替代深度学习方法
+- **GPU加速**：支持CUDA加速训练和推理
 - **大图片处理**：优化算法支持1G以上大图片分析
 - **内存效率**：采用分块处理和增量计算
+- **混合方法**：结合分形理论和深度学习的优势
 
-## 安装依赖
+## 📦 安装依赖
 
+### 基础依赖
 ```bash
 pip install -r requirements.txt
 ```
 
-## 使用方法
+### GPU支持（可选，推荐）
+如果有NVIDIA GPU，安装CUDA版本的PyTorch：
+```bash
+# CUDA 11.8
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 
-### 1. 演示模式（推荐新手）
+# CUDA 12.1
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+```
+
+## 🚀 快速开始
+
+### 1. 完整演示（推荐）
 
 ```bash
+# 运行完整演示（生成、变换、识别、OCR框）
+python demo_system.py --demo all
+
+# 只演示检测功能
+python demo_system.py --demo detect
+
+# 只演示变换恢复
+python demo_system.py --demo transform
+
+# 只演示金字塔分析
+python demo_system.py --demo pyramid
+```
+
+### 2. 训练模型
+
+```bash
+# 生成训练数据并训练模型（每类500个样本）
+python train_model.py --generate-data --samples-per-class 500 --num-epochs 50
+
+# 使用已有数据训练
+python train_model.py --num-epochs 50 --batch-size 32
+
+# 恢复训练
+python train_model.py --resume models/nested_char_model.pth --num-epochs 20
+```
+
+### 3. 使用训练好的模型进行检测
+
+```python
+from nested_char_detector import NestedCharDetector
+
+# 初始化检测器
+detector = NestedCharDetector(model_path='models/nested_char_model.pth')
+
+# 检测图像
+result = detector.detect('test_image.png')
+
+print(f"是否为嵌套字: {result['is_nested']}")
+print(f"估计层数: {result['estimated_layers']}")
+print(f"置信度: {result['confidence']:.3f}")
+print(f"OCR框数量: {result['num_boxes']}")
+```
+
+### 4. 生成训练数据
+
+```python
+from training_data_generator import TrainingDataGenerator
+
+# 创建生成器
+generator = TrainingDataGenerator(
+    font_path='C:/Windows/Fonts/simhei.ttf',
+    output_dir='training_data'
+)
+
+# 生成数据集（每类500个样本）
+metadata = generator.generate_dataset(samples_per_class=500)
+```
+
+### 5. 原有功能（兼容旧版本）
+
+```bash
+# 分形分析模式
 python MultiCharacter.py --mode demo
-```
 
-这将自动生成示例嵌套字符并进行分析。
+# 生成嵌套字符
+python MultiCharacter.py --mode generate --layers 3
 
-### 2. 生成嵌套字符
-
-```bash
-# 生成2层嵌套字符
-python MultiCharacter.py --mode generate --layers 2 --large-text "测试" --small-text "嵌套字符"
-
-# 批量生成多个嵌套字符
-python MultiCharacter.py --mode batch_generate --batch-count 5
-```
-
-### 3. 分析图像
-
-```bash
-# 分析单个图像
-python MultiCharacter.py --mode analyze --image-path "output_images/nested_char_1_2layers.png"
-
-# 批量分析output_images目录中的所有图像
+# 批量分析
 python MultiCharacter.py --mode batch_analyze
-```
-
-### 4. 原始功能（兼容旧版本）
-
-```bash
-python MultiCharacter.py --mode legacy -lt "夜饮东坡" -st "长文本内容..."
 ```
 
 ## 命令行参数
