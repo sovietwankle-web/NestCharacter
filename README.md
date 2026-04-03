@@ -249,6 +249,43 @@ CharacterForMulti/
 2. **图像内容审核**：检测复杂文字结构
 3. **艺术字体分析**：分析复杂字体的层次结构
 4. **反爬虫研究**：研究基于嵌套字的反爬虫技术
+5. **AI Bot集成**：通过 Coze 平台集成到聊天机器人
+
+## 🤖 Coze 平台集成
+
+本项目支持集成到 Coze（扣子）AI 平台，可以通过聊天机器人的方式提供嵌套字符识别服务。
+
+### 快速开始
+
+1. **启动 API 服务**
+```bash
+# 安装依赖（包含 FastAPI）
+pip install -r requirements.txt
+
+# 启动服务
+python api_server.py
+```
+
+服务将在 `http://localhost:8000` 启动
+
+2. **测试 API**
+```bash
+python test_api.py
+```
+
+3. **查看 API 文档**
+访问 http://localhost:8000/docs
+
+4. **集成到 Coze 平台**
+详细步骤请查看 [COZE_INTEGRATION.md](COZE_INTEGRATION.md)
+
+### 部署选项
+
+- **本地测试**: 使用 ngrok 提供公网访问
+- **Docker 部署**: `docker-compose up -d`
+- **云服务器**: 阿里云、腾讯云等
+
+详细部署说明请参考 [COZE_INTEGRATION.md](COZE_INTEGRATION.md)
 
 ## 性能指标
 

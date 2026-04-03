@@ -163,8 +163,8 @@ class TrainingDataGenerator:
         
         # 添加噪声
         if random.random() > 0.5:
-            noise = np.random.normal(0, 10, image.shape).astype(np.uint8)
-            image = cv2.add(image, noise)
+            noise = np.random.normal(0, 10, image.shape)
+            image = np.clip(image.astype(np.float32) + noise, 0, 255).astype(np.uint8)
         
         return image
     

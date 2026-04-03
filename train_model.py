@@ -86,12 +86,15 @@ def main():
     print(f"验证集: {len(val_paths)}张图像")
     print(f"测试集: {len(test_paths)}张图像")
     
-    # 数据增强
+    # 数据增强 - 更强的增强策略以匹配真实场景
     train_transform = transforms.Compose([
         transforms.Resize((256, 256)),
-        transforms.RandomRotation(10),
-        transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
+        transforms.RandomRotation(20),
+        transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1), shear=5),
+        transforms.RandomPerspective(distortion_scale=0.2, p=0.3),
+        transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.0)),
         transforms.ToTensor(),
+        transforms.RandomErasing(p=0.2, scale=(0.02, 0.1)),
         transforms.Normalize(mean=[0.5], std=[0.5])
     ])
     

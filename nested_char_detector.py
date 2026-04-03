@@ -99,22 +99,44 @@ class LinearTransformRecovery:
                 scale_x = np.sqrt(1.0 / median_ratio)
                 scale_y = 1.0 / np.sqrt(1.0 / median_ratio)
         
-        # 检测翻转 - 通过分析文字方向
+        # 检测翻转 - 通过梯度方向直方图和投影分析
         flip_h = False
         flip_v = False
-        
-        # 简单的翻转检测：检查图像的质心分布
-        moments = cv2.moments(edges)
-        if moments['m00'] > 0:
-            cx = moments['m10'] / moments['m00']
-            cy = moments['m01'] / moments['m00']
-            
-            h, w = gray.shape
-            # 如果质心偏离中心较多，可能有翻转
-            if cx < w * 0.3 or cx > w * 0.7:
-                flip_h = True
-            if cy < h * 0.3 or cy > h * 0.7:
-                flip_v = True
+
+        h, w = gray.shape
+
+        # 使用水平/垂直投影分析检测翻转
+        # 计算水平投影（每行像素和）
+        h_proj = np.sum(edges, axis=1).astype(np.float64)
+        # 计算垂直投影（每列像素和）
+        v_proj = np.sum(edges, axis=0).astype(np.float64)
+
+        # 分析投影的不对称性 - 比较上下/左右半部分的梯度能量
+        grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+
+        # 水平翻转检测：比较左右半部分的梯度方向分布
+        left_grad = np.mean(np.abs(grad_x[:, :w//2]))
+        right_grad = np.mean(np.abs(grad_x[:, w//2:]))
+        if left_grad > 0 and right_grad > 0:
+            h_asymmetry = abs(left_grad - right_grad) / max(left_grad, right_grad)
+            # 结合投影重心偏移
+            if len(v_proj) > 0 and np.sum(v_proj) > 0:
+                v_center = np.average(np.arange(len(v_proj)), weights=v_proj)
+                v_offset = abs(v_center - w / 2) / (w / 2)
+                if h_asymmetry > 0.3 and v_offset > 0.15:
+                    flip_h = True
+
+        # 垂直翻转检测：比较上下半部分的梯度方向分布
+        top_grad = np.mean(np.abs(grad_y[:h//2, :]))
+        bottom_grad = np.mean(np.abs(grad_y[h//2:, :]))
+        if top_grad > 0 and bottom_grad > 0:
+            v_asymmetry = abs(top_grad - bottom_grad) / max(top_grad, bottom_grad)
+            if len(h_proj) > 0 and np.sum(h_proj) > 0:
+                h_center = np.average(np.arange(len(h_proj)), weights=h_proj)
+                h_offset = abs(h_center - h / 2) / (h / 2)
+                if v_asymmetry > 0.3 and h_offset > 0.15:
+                    flip_v = True
         
         return TransformParams(
             rotation=rotation,
@@ -262,63 +284,104 @@ class GaussianPyramidAnalyzer:
         )
 
 
+class SEBlock(nn.Module):
+    """Squeeze-and-Excitation注意力模块"""
+
+    def __init__(self, channels: int, reduction: int = 16):
+        super(SEBlock, self).__init__()
+        self.squeeze = nn.AdaptiveAvgPool2d(1)
+        self.excitation = nn.Sequential(
+            nn.Linear(channels, channels // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channels // reduction, channels, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, c, _, _ = x.size()
+        y = self.squeeze(x).view(b, c)
+        y = self.excitation(y).view(b, c, 1, 1)
+        return x * y.expand_as(x)
+
+
+class ResidualBlock(nn.Module):
+    """带SE注意力的残差块"""
+
+    def __init__(self, in_channels: int, out_channels: int, stride: int = 1):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.se = SEBlock(out_channels)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, 1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out = self.se(out)
+        out += self.shortcut(x)
+        out = F.relu(out)
+        return out
+
+
 class NestedCharCNN(nn.Module):
-    """嵌套字符识别卷积神经网络"""
-    
+    """嵌套字符识别卷积神经网络 - 带残差连接和SE注意力"""
+
     def __init__(self, num_classes: int = 6):
         """
         Args:
             num_classes: 分类数量（0层到5层）
         """
         super(NestedCharCNN, self).__init__()
-        
-        # 卷积层 - 提取多尺度特征
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(32)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(64)
-        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm2d(128)
-        self.conv4 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
-        self.bn4 = nn.BatchNorm2d(256)
-        
-        # 池化层
-        self.pool = nn.MaxPool2d(2, 2)
-        
+
+        # 初始卷积层
+        self.stem = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=7, stride=2, padding=3, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        )
+
+        # 残差块组
+        self.layer1 = self._make_layer(32, 64, num_blocks=2, stride=1)
+        self.layer2 = self._make_layer(64, 128, num_blocks=2, stride=2)
+        self.layer3 = self._make_layer(128, 256, num_blocks=2, stride=2)
+        self.layer4 = self._make_layer(256, 512, num_blocks=2, stride=2)
+
         # 全局平均池化
         self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
-        
-        # 全连接层
-        self.fc1 = nn.Linear(256, 128)
-        self.dropout1 = nn.Dropout(0.5)
-        self.fc2 = nn.Linear(128, 64)
-        self.dropout2 = nn.Dropout(0.3)
-        self.fc3 = nn.Linear(64, num_classes)
-        
+
+        # 分类头
+        self.classifier = nn.Sequential(
+            nn.Linear(512, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(256, num_classes)
+        )
+
+    def _make_layer(self, in_channels: int, out_channels: int,
+                    num_blocks: int, stride: int) -> nn.Sequential:
+        layers = [ResidualBlock(in_channels, out_channels, stride)]
+        for _ in range(1, num_blocks):
+            layers.append(ResidualBlock(out_channels, out_channels, 1))
+        return nn.Sequential(*layers)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # 卷积块1
-        x = self.pool(F.relu(self.bn1(self.conv1(x))))
-        
-        # 卷积块2
-        x = self.pool(F.relu(self.bn2(self.conv2(x))))
-        
-        # 卷积块3
-        x = self.pool(F.relu(self.bn3(self.conv3(x))))
-        
-        # 卷积块4
-        x = self.pool(F.relu(self.bn4(self.conv4(x))))
-        
-        # 全局平均池化
+        x = self.stem(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
         x = self.global_pool(x)
         x = x.view(x.size(0), -1)
-        
-        # 全连接层
-        x = F.relu(self.fc1(x))
-        x = self.dropout1(x)
-        x = F.relu(self.fc2(x))
-        x = self.dropout2(x)
-        x = self.fc3(x)
-        
+        x = self.classifier(x)
         return x
 
 
@@ -385,12 +448,13 @@ class OCRBoxGenerator:
             min_area = 100
             max_area = 10000
         
-        # 二值化梯度图
-        threshold = np.percentile(gradient, 85)
-        binary = (gradient > threshold).astype(np.uint8) * 255
-        
-        # 形态学操作连接断裂的笔画
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        # 自适应二值化梯度图 - 使用Otsu替代固定百分位
+        grad_normalized = cv2.normalize(gradient, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        _, binary = cv2.threshold(grad_normalized, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # 自适应形态学核大小 - 根据字符大小调整
+        kernel_size = max(3, min(7, int(char_size / 5))) if char_size > 0 else 3
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
         
         # 查找轮廓
@@ -529,35 +593,91 @@ class NestedCharDetector:
             transforms.Normalize(mean=[0.5], std=[0.5])
         ])
     
+    def _preprocess_image(self, image: np.ndarray) -> np.ndarray:
+        """图像预处理 - CLAHE对比度增强 + 双边滤波去噪"""
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image.copy()
+
+        # CLAHE自适应直方图均衡化
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+
+        # 双边滤波 - 去噪同时保留边缘
+        denoised = cv2.bilateralFilter(enhanced, d=5, sigmaColor=50, sigmaSpace=50)
+
+        # 转回BGR
+        if len(image.shape) == 3:
+            result = image.copy()
+            result_gray = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
+            # 用增强后的灰度图替换亮度通道
+            ratio = np.where(result_gray > 0,
+                             denoised.astype(np.float32) / result_gray.astype(np.float32),
+                             1.0)
+            for c in range(3):
+                result[:, :, c] = np.clip(result[:, :, c] * ratio, 0, 255).astype(np.uint8)
+            return result
+        return denoised
+
+    def _tta_inference(self, pil_image: Image.Image) -> Tuple[int, float]:
+        """测试时增强(TTA) - 多次推理取平均提高鲁棒性"""
+        augmented_images = []
+
+        # 原始图像
+        augmented_images.append(self.transform(pil_image))
+
+        # 水平翻转
+        flipped_h = pil_image.transpose(Image.FLIP_LEFT_RIGHT)
+        augmented_images.append(self.transform(flipped_h))
+
+        # 轻微旋转 +5度
+        rotated_pos = pil_image.rotate(-5, fillcolor=255)
+        augmented_images.append(self.transform(rotated_pos))
+
+        # 轻微旋转 -5度
+        rotated_neg = pil_image.rotate(5, fillcolor=255)
+        augmented_images.append(self.transform(rotated_neg))
+
+        # 批量推理
+        batch = torch.stack(augmented_images).to(self.device)
+
+        with torch.no_grad():
+            outputs = self.model(batch)
+            all_probs = F.softmax(outputs, dim=1)
+            # 平均所有增强版本的概率
+            avg_probs = torch.mean(all_probs, dim=0)
+            predicted_layers = torch.argmax(avg_probs).item()
+            confidence = avg_probs[predicted_layers].item()
+
+        return predicted_layers, confidence
+
     def detect(self, image_path: str) -> Dict:
         """完整的检测流程"""
         # 1. 加载图像
         image = cv2.imread(image_path)
         if image is None:
             raise ValueError(f"无法加载图像: {image_path}")
-        
-        # 2. 检测并恢复线性变换
+
+        # 2. 图像预处理 - 对比度增强和去噪
+        image = self._preprocess_image(image)
+
+        # 3. 检测并恢复线性变换
         transform_params = self.transform_recovery.detect_transform_params(image)
         recovered_image = self.transform_recovery.apply_inverse_transform(image, transform_params)
-        
-        # 3. 构建高斯金字塔并分析
+
+        # 4. 构建高斯金字塔并分析
         pyramid_features = self.pyramid_analyzer.analyze(recovered_image)
-        
-        # 4. 使用神经网络识别嵌套层数
+
+        # 5. 使用TTA增强的神经网络识别嵌套层数
         gray = cv2.cvtColor(recovered_image, cv2.COLOR_BGR2GRAY)
         pil_image = Image.fromarray(gray)
-        input_tensor = self.transform(pil_image).unsqueeze(0).to(self.device)
-        
-        with torch.no_grad():
-            output = self.model(input_tensor)
-            probabilities = F.softmax(output, dim=1)
-            predicted_layers = torch.argmax(probabilities, dim=1).item()
-            confidence = probabilities[0, predicted_layers].item()
-        
-        # 5. 生成OCR检测框
+        predicted_layers, confidence = self._tta_inference(pil_image)
+
+        # 6. 生成OCR检测框
         ocr_boxes = self.box_generator.generate_boxes(recovered_image, pyramid_features)
         
-        # 6. 整合结果
+        # 7. 整合结果
         result = {
             'image_path': image_path,
             'is_nested': predicted_layers > 0,
