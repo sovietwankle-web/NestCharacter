@@ -612,9 +612,8 @@ class NestedCharDetector:
             result = image.copy()
             result_gray = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
             # 用增强后的灰度图替换亮度通道
-            ratio = np.where(result_gray > 0,
-                             denoised.astype(np.float32) / result_gray.astype(np.float32),
-                             1.0)
+            result_gray_safe = np.maximum(result_gray.astype(np.float32), 1.0)
+            ratio = denoised.astype(np.float32) / result_gray_safe
             for c in range(3):
                 result[:, :, c] = np.clip(result[:, :, c] * ratio, 0, 255).astype(np.uint8)
             return result
