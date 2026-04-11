@@ -127,7 +127,7 @@ def generate_nested_image(main_text, fill_text, layers, wrap_after):
 # ==================== OCR检测 ====================
 
 def run_detection(image):
-    """对图像执行嵌套字符检测，蓝框大字、绿框小字、红框逐字，输出字的大小"""
+    """对图像执行嵌套字符检测，给每个字加红框并输出字的大小"""
     if image is None:
         return None, ""
 
@@ -146,83 +146,90 @@ def run_detection(image):
         # 1. 嵌套结构检测
         result = det.detect(tmp_path)
 
-        # 2. 图像标注
+        # 2. 逐字框标注
         img_cv = cv2.imread(tmp_path)
         img_draw = img_cv.copy()
         gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+
+        # 二值化找所有笔画
         _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
 
-        # === 蓝色粗框：大字整体轮廓（闭操作合并小字成大字区块） ===
-        kernel_large = cv2.getStructuringElement(cv2.MORPH_RECT, (30, 30))
-        closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_large, iterations=3)
-        contours_large, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        large_boxes = []
-        for cnt in contours_large:
-            if cv2.contourArea(cnt) > 2000:
-                x, y, w, h = cv2.boundingRect(cnt)
-                cv2.rectangle(img_draw, (x, y), (x + w, y + h), (255, 0, 0), 3)
-                large_boxes.append((w, h))
+        # 找每个独立连通区域（即每个字/笔画段）
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+            binary, connectivity=8
+        )
 
-        # === 红框：逐字标注（连通区域分析） ===
-        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
-        char_sizes = []
+        # 按面积分大字和小字
+        sizes = []
+        for i in range(1, num_labels):  # 跳过背景
+            area = stats[i, cv2.CC_STAT_AREA]
+            w = stats[i, cv2.CC_STAT_WIDTH]
+            h = stats[i, cv2.CC_STAT_HEIGHT]
+            if area > 5:  # 过滤噪点
+                sizes.append((w, h, area))
+
+        # 统计字的大小分布
+        if sizes:
+            all_heights = sorted([h for _, h, _ in sizes], reverse=True)
+            # 用高度中位数区分大小字
+            median_h = all_heights[len(all_heights) // 2]
+            threshold_h = median_h * 3  # 高度大于中位数3倍的算大字
+        else:
+            threshold_h = 50
+
+        large_chars = []
+        small_chars = []
+
         for i in range(1, num_labels):
             area = stats[i, cv2.CC_STAT_AREA]
-            if area <= 5:
-                continue
             x = stats[i, cv2.CC_STAT_LEFT]
             y = stats[i, cv2.CC_STAT_TOP]
             w = stats[i, cv2.CC_STAT_WIDTH]
             h = stats[i, cv2.CC_STAT_HEIGHT]
-            cv2.rectangle(img_draw, (x, y), (x + w, y + h), (0, 0, 255), 1)
-            char_sizes.append((w, h, area))
 
-        # === 绿色框：小字区域（在大字内部的小连通区域） ===
-        # 用小核膨胀把相邻小字合并成小字簇
-        kernel_small = cv2.getStructuringElement(cv2.MORPH_RECT, (8, 8))
-        dilated_small = cv2.dilate(binary, kernel_small, iterations=1)
-        contours_small, _ = cv2.findContours(dilated_small, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        small_cluster_count = 0
-        for cnt in contours_small:
-            area = cv2.contourArea(cnt)
-            if 100 < area < 50000:
-                x, y, w, h = cv2.boundingRect(cnt)
-                cv2.rectangle(img_draw, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                small_cluster_count += 1
+            if area <= 5:
+                continue
+
+            if h >= threshold_h:
+                # 大字：红色粗框
+                cv2.rectangle(img_draw, (x, y), (x + w, y + h), (0, 0, 255), 3)
+                large_chars.append((w, h, area))
+            else:
+                # 小字：红色细框
+                cv2.rectangle(img_draw, (x, y), (x + w, y + h), (0, 0, 255), 1)
+                small_chars.append((w, h, area))
 
         img_with_boxes = cv2.cvtColor(img_draw, cv2.COLOR_BGR2RGB)
 
-        # 3. 报告：字的大小统计
+        # 3. 字体大小统计
         report = f"===== 检测结果 =====\n"
         report += f"是否嵌套：{'是' if result['is_nested'] else '否'}\n"
         report += f"预测层数：{result['estimated_layers']} 层\n\n"
 
-        report += f"===== 标注说明 =====\n"
-        report += f"蓝色粗框：大字区域（{len(large_boxes)} 个）\n"
-        report += f"绿色框　：小字簇（{small_cluster_count} 个）\n"
-        report += f"红色细框：逐字标注（{len(char_sizes)} 个）\n\n"
-
         report += f"===== 字的大小 =====\n"
-        if large_boxes:
-            avg_w = sum(w for w, h in large_boxes) / len(large_boxes)
-            avg_h = sum(h for w, h in large_boxes) / len(large_boxes)
-            report += f"大字平均尺寸：{avg_w:.0f} x {avg_h:.0f} px\n"
+        report += f"总字数：{len(large_chars) + len(small_chars)} 个\n\n"
 
-        if char_sizes:
-            heights = sorted([h for w, h, a in char_sizes], reverse=True)
-            # 按高度分大小字：取最大高度的30%为分界线
-            big_threshold = heights[0] * 0.3
-            big = [(w, h) for w, h, a in char_sizes if h >= big_threshold]
-            small = [(w, h) for w, h, a in char_sizes if h < big_threshold]
+        if large_chars:
+            avg_w = sum(w for w, h, a in large_chars) / len(large_chars)
+            avg_h = sum(h for w, h, a in large_chars) / len(large_chars)
+            max_h = max(h for w, h, a in large_chars)
+            min_h = min(h for w, h, a in large_chars)
+            report += (
+                f"大字（红色粗框）：{len(large_chars)} 个\n"
+                f"  平均尺寸：{avg_w:.0f} x {avg_h:.0f} px\n"
+                f"  高度范围：{min_h} ~ {max_h} px\n\n"
+            )
 
-            if big:
-                bw = sum(w for w, h in big) / len(big)
-                bh = sum(h for w, h in big) / len(big)
-                report += f"大字符：{len(big)} 个，平均 {bw:.0f}x{bh:.0f} px\n"
-            if small:
-                sw = sum(w for w, h in small) / len(small)
-                sh = sum(h for w, h in small) / len(small)
-                report += f"小字符：{len(small)} 个，平均 {sw:.0f}x{sh:.0f} px\n"
+        if small_chars:
+            avg_w = sum(w for w, h, a in small_chars) / len(small_chars)
+            avg_h = sum(h for w, h, a in small_chars) / len(small_chars)
+            max_h = max(h for w, h, a in small_chars)
+            min_h = min(h for w, h, a in small_chars)
+            report += (
+                f"小字（红色细框）：{len(small_chars)} 个\n"
+                f"  平均尺寸：{avg_w:.0f} x {avg_h:.0f} px\n"
+                f"  高度范围：{min_h} ~ {max_h} px\n"
+            )
 
         return img_with_boxes, report
 
