@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.coze.cn)",
+      "WebSearch",
+      "Bash(dir:*)",
+      "Bash(docker:*)",
+      "Bash(python:*)",
+      "Bash(pip install:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git tag:*)",
+      "Bash(find /home -name \"NestCharacter.py\")",
+      "Bash(find /root -name \"NestCharacter.py\")",
+      "Bash(find /mnt -name \"NestCharacter.py\")",
+      "Bash(curl -s http://127.0.0.1:7860/)",
+      "Bash(kill %1)",
+      "Bash(pyinstaller build_exe.spec --noconfirm)",
+      "Bash(timeout 15 ./NestedCharDemo.exe)",
+      "Bash(./NestedCharDemo.exe)",
+      "Read(//tmp/**)",
+      "Bash(pkill -f \"python\")",
+      "Bash(taskkill //F //PID 15392)",
+      "Bash(taskkill //F //IM python.exe)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

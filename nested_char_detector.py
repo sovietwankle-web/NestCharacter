@@ -670,7 +670,28 @@ class NestedCharDetector:
 
         # 5. 使用TTA增强的神经网络识别嵌套层数
         gray = cv2.cvtColor(recovered_image, cv2.COLOR_BGR2GRAY)
-        pil_image = Image.fromarray(gray)
+        # 裁剪到内容区域再推理（消除大量白边对分类的干扰）
+        gray_for_crop = gray.copy()
+        _, binary_crop = cv2.threshold(gray_for_crop, 240, 255, cv2.THRESH_BINARY_INV)
+        coords = cv2.findNonZero(binary_crop)
+        if coords is not None and len(coords) > 50:
+            x, y, w, h = cv2.boundingRect(coords)
+            pad = max(w, h) // 10
+            x1 = max(0, x - pad)
+            y1 = max(0, y - pad)
+            x2 = min(gray.shape[1], x + w + pad)
+            y2 = min(gray.shape[0], y + h + pad)
+            cropped = gray[y1:y2, x1:x2]
+            # 补成正方形
+            ch, cw = cropped.shape
+            side = max(ch, cw)
+            square = np.full((side, side), 255, dtype=np.uint8)
+            sy = (side - ch) // 2
+            sx = (side - cw) // 2
+            square[sy:sy+ch, sx:sx+cw] = cropped
+            pil_image = Image.fromarray(square)
+        else:
+            pil_image = Image.fromarray(gray)
         predicted_layers, confidence = self._tta_inference(pil_image)
 
         # 6. 生成OCR检测框

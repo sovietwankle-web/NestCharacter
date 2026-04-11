@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 嵌套字符交互式演示 - Gradio Web UI
-功能：生成嵌套字符图 → 展示OCR检测能力
+功能：生成嵌套字符图 → 展示OCR检测能力 → 加密对抗
 """
 
 import gradio as gr
@@ -127,13 +127,12 @@ def generate_nested_image(main_text, fill_text, layers, wrap_after):
 # ==================== OCR检测 ====================
 
 def run_detection(image):
-    """对图像执行嵌套字符检测"""
+    """对图像执行嵌套字符检测，蓝框大字、绿框小字、红框逐字，输出字的大小"""
     if image is None:
-        return None, "请先生成图像"
+        return None, ""
 
     det = get_detector()
 
-    # 保存临时文件供检测器使用
     tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
     tmp_path = tmp.name
     tmp.close()
@@ -144,36 +143,87 @@ def run_detection(image):
         else:
             cv2.imwrite(tmp_path, cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR))
 
+        # 1. 嵌套结构检测
         result = det.detect(tmp_path)
 
-        # 在图像上绘制检测框
+        # 2. 图像标注
         img_cv = cv2.imread(tmp_path)
-        for (x, y, w, h) in result['ocr_boxes']:
-            cv2.rectangle(img_cv, (x, y), (x + w, y + h), (0, 0, 255), 2)
+        img_draw = img_cv.copy()
+        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
 
-        # 转回RGB
-        img_with_boxes = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+        # === 蓝色粗框：大字整体轮廓（闭操作合并小字成大字区块） ===
+        kernel_large = cv2.getStructuringElement(cv2.MORPH_RECT, (30, 30))
+        closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_large, iterations=3)
+        contours_large, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        large_boxes = []
+        for cnt in contours_large:
+            if cv2.contourArea(cnt) > 2000:
+                x, y, w, h = cv2.boundingRect(cnt)
+                cv2.rectangle(img_draw, (x, y), (x + w, y + h), (255, 0, 0), 3)
+                large_boxes.append((w, h))
 
-        # 构建结果文本
-        report = f"""
-========== 检测结果 ==========
-是否嵌套：{'是' if result['is_nested'] else '否'}
-预测层数：{result['estimated_layers']} 层
-置信度　：{result['confidence']:.2%}
-检测框数：{result['num_boxes']} 个
+        # === 红框：逐字标注（连通区域分析） ===
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+        char_sizes = []
+        for i in range(1, num_labels):
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area <= 5:
+                continue
+            x = stats[i, cv2.CC_STAT_LEFT]
+            y = stats[i, cv2.CC_STAT_TOP]
+            w = stats[i, cv2.CC_STAT_WIDTH]
+            h = stats[i, cv2.CC_STAT_HEIGHT]
+            cv2.rectangle(img_draw, (x, y), (x + w, y + h), (0, 0, 255), 1)
+            char_sizes.append((w, h, area))
 
------ 变换参数 -----
-旋转角度：{result['transform_params']['rotation']:.2f}°
-X轴缩放：{result['transform_params']['scale_x']:.2f}
-Y轴缩放：{result['transform_params']['scale_y']:.2f}
-水平翻转：{'是' if result['transform_params']['flip_horizontal'] else '否'}
-垂直翻转：{'是' if result['transform_params']['flip_vertical'] else '否'}
+        # === 绿色框：小字区域（在大字内部的小连通区域） ===
+        # 用小核膨胀把相邻小字合并成小字簇
+        kernel_small = cv2.getStructuringElement(cv2.MORPH_RECT, (8, 8))
+        dilated_small = cv2.dilate(binary, kernel_small, iterations=1)
+        contours_small, _ = cv2.findContours(dilated_small, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        small_cluster_count = 0
+        for cnt in contours_small:
+            area = cv2.contourArea(cnt)
+            if 100 < area < 50000:
+                x, y, w, h = cv2.boundingRect(cnt)
+                cv2.rectangle(img_draw, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                small_cluster_count += 1
 
------ 金字塔分析 -----
-边缘密度：{', '.join([f'L{i}={d:.4f}' for i, d in enumerate(result['pyramid_analysis']['edge_densities'])])}
-字符大小：{', '.join([f'L{i}={s:.1f}' for i, s in enumerate(result['pyramid_analysis']['char_sizes'])])}
-==============================
-"""
+        img_with_boxes = cv2.cvtColor(img_draw, cv2.COLOR_BGR2RGB)
+
+        # 3. 报告：字的大小统计
+        report = f"===== 检测结果 =====\n"
+        report += f"是否嵌套：{'是' if result['is_nested'] else '否'}\n"
+        report += f"预测层数：{result['estimated_layers']} 层\n\n"
+
+        report += f"===== 标注说明 =====\n"
+        report += f"蓝色粗框：大字区域（{len(large_boxes)} 个）\n"
+        report += f"绿色框　：小字簇（{small_cluster_count} 个）\n"
+        report += f"红色细框：逐字标注（{len(char_sizes)} 个）\n\n"
+
+        report += f"===== 字的大小 =====\n"
+        if large_boxes:
+            avg_w = sum(w for w, h in large_boxes) / len(large_boxes)
+            avg_h = sum(h for w, h in large_boxes) / len(large_boxes)
+            report += f"大字平均尺寸：{avg_w:.0f} x {avg_h:.0f} px\n"
+
+        if char_sizes:
+            heights = sorted([h for w, h, a in char_sizes], reverse=True)
+            # 按高度分大小字：取最大高度的30%为分界线
+            big_threshold = heights[0] * 0.3
+            big = [(w, h) for w, h, a in char_sizes if h >= big_threshold]
+            small = [(w, h) for w, h, a in char_sizes if h < big_threshold]
+
+            if big:
+                bw = sum(w for w, h in big) / len(big)
+                bh = sum(h for w, h in big) / len(big)
+                report += f"大字符：{len(big)} 个，平均 {bw:.0f}x{bh:.0f} px\n"
+            if small:
+                sw = sum(w for w, h in small) / len(small)
+                sh = sum(h for w, h in small) / len(small)
+                report += f"小字符：{len(small)} 个，平均 {sw:.0f}x{sh:.0f} px\n"
+
         return img_with_boxes, report
 
     finally:
@@ -426,10 +476,10 @@ with gr.Blocks(title="嵌套字符生成与OCR检测演示") as demo:
                     gr.Markdown("### 生成结果")
                     output_image = gr.Image(label="嵌套字符图", type="pil", height=400)
                     gr.Markdown("### OCR检测")
-                    detect_btn = gr.Button("运行OCR检测", variant="secondary", size="lg")
+                    detect_btn = gr.Button("运行检测", variant="secondary", size="lg")
                     with gr.Row():
-                        detect_image = gr.Image(label="检测结果（红框=OCR检测框）", height=400)
-                        detect_report = gr.Textbox(label="检测报告", lines=18, interactive=False)
+                        detect_image = gr.Image(label="蓝框=大字 绿框=小字 红框=梯度检测", height=400)
+                        detect_report = gr.Textbox(label="检测报告", lines=14, interactive=False)
 
         # ==================== Tab 2: 加密对抗 ====================
         with gr.Tab("加密对抗"):
