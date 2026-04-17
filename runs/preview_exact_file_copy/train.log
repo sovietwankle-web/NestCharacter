@@ -1,0 +1,6 @@
+[2026-04-17 21:10:03] 脚本启动
+[2026-04-17 21:10:03] 预览图已生成: runs\preview_exact_file_copy\preview\preview_layers_grid.png
+[2026-04-17 21:10:03] OCR预览图已生成: runs\preview_exact_file_copy\preview\preview_ocr_grid.png
+[2026-04-17 21:10:03] 当前为预览模式，未执行训练。
+[2026-04-17 21:10:03] 请先检查预览图: runs\preview_exact_file_copy\preview\preview_layers_grid.png 和 runs\preview_exact_file_copy\preview\preview_ocr_grid.png
+[2026-04-17 21:10:03] 确认后可执行: python overnight_autotrain.py --run --generate-data --generate-ocr-data --run-name preview_exact_file_copy_full

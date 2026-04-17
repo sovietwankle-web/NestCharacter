@@ -1,49 +1,72 @@
 # -*- mode: python ; coding: utf-8 -*-
+"""
+PyInstaller spec - 嵌套字符工坊打包
+仅打包核心功能：生成、检测、加密对抗
+"""
 import os
 import sys
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
-# 收集gradio的所有数据文件和子模块
-gradio_datas = collect_data_files('gradio')
-gradio_datas += collect_data_files('gradio_client')
-gradio_datas += collect_data_files('safehttpx')
-gradio_datas += collect_data_files('groovy')
-# gradio需要运行时访问.py源文件（用于动态生成.pyi）
-gradio_datas += collect_data_files('gradio', include_py_files=True)
-gradio_datas += collect_data_files('gradio_client', include_py_files=True)
-gradio_hidden = collect_submodules('gradio')
-gradio_hidden += collect_submodules('gradio_client')
-gradio_hidden += collect_submodules('safehttpx')
-gradio_hidden += collect_submodules('groovy')
+block_cipher = None
+
+# 需要打包的数据文件
+datas = [
+    ('models/nested_char_model.pth', 'models'),
+    ('models/nested_char_model_dual.pth', 'models'),
+    ('training_data/ocr_data/char_vocab.json', 'training_data/ocr_data'),
+]
+
+# torch / torchvision 的数据文件（模型权重加载需要）
+datas += collect_data_files('torch')
+datas += collect_data_files('torchvision')
+
+# 隐式导入（torch动态加载的子模块）
+hiddenimports = [
+    'torch',
+    'torchvision',
+    'torchvision.transforms',
+    'torchvision.models',
+    'cv2',
+    'PIL',
+    'numpy',
+    'nested_char_detector',
+    'NestCharacter',
+]
+
+# torch 子模块收集
+hiddenimports += collect_submodules('torch')
+hiddenimports += collect_submodules('torchvision')
+
+# 排除不需要的大包（大幅缩小体积）
+excludes = [
+    'tensorflow', 'tensorboard', 'keras',
+    'gradio', 'gradio_client',
+    'fastapi', 'uvicorn', 'starlette',
+    'requests', 'urllib3', 'httpx',
+    'scipy', 'sklearn', 'scikit-learn', 'skimage', 'scikit-image',
+    'seaborn', 'matplotlib', 'tqdm',
+    'IPython', 'notebook', 'jupyter',
+    'pyarrow', 'pandas',
+    'tkinter.test',
+    'api_server', 'test_api', 'demo_system', 'test_system',
+    'training_data_generator', 'train_model',
+]
 
 a = Analysis(
     ['ui_demo.py'],
     pathex=[],
     binaries=[],
-    datas=[
-        ('models/nested_char_model.pth', 'models'),
-        ('models/training_history.png', 'models'),
-        ('models/test_results.txt', 'models'),
-    ] + gradio_datas,
-    hiddenimports=[
-        'torch',
-        'torchvision',
-        'torchvision.transforms',
-        'cv2',
-        'PIL',
-        'numpy',
-        'nested_char_detector',
-        'NestCharacter',
-        'training_data_generator',
-    ] + gradio_hidden,
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tensorflow', 'tensorboard', 'keras'],
+    excludes=excludes,
     noarchive=False,
+    cipher=block_cipher,
 )
 
-pyz = PYZ(a.pure)
+pyz = PYZ(a.pure, cipher=block_cipher)
 
 exe = EXE(
     pyz,
@@ -54,8 +77,9 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,
-    console=True,
+    upx=True,
+    console=False,
+    icon=None,
 )
 
 coll = COLLECT(
@@ -63,6 +87,6 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=False,
+    upx=True,
     name='NestedCharDemo',
 )

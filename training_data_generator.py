@@ -22,13 +22,17 @@ class TrainingDataGenerator:
         self.train_dir: str = os.path.join(output_dir, 'train')
         self.val_dir: str = os.path.join(output_dir, 'val')
         self.test_dir: str = os.path.join(output_dir, 'test')
-        
+
         # 创建目录
         for dir_path in [self.train_dir, self.val_dir, self.test_dir]:
             os.makedirs(dir_path, exist_ok=True)
-        
+
         # 中文字符集
         self.char_pool: List[str] = self._create_char_pool()
+
+        # OCR字符映射表
+        self.char_vocab: Dict[str, int] = {char: idx for idx, char in enumerate(self.char_pool)}
+        self.id_to_char: Dict[int, str] = {idx: char for idx, char in enumerate(self.char_pool)}
         
     def _create_char_pool(self) -> List[str]:
         """创建字符池"""
@@ -168,6 +172,158 @@ class TrainingDataGenerator:
         
         return image
     
+    def generate_ocr_patch(self, char: str, size: Tuple[int, int] = (64, 64),
+                           apply_augment: bool = True) -> Tuple[np.ndarray, int]:
+        """生成单个字符的灰度图像块用于OCR训练
+
+        Args:
+            char: 要渲染的字符
+            size: 输出图像尺寸 (宽, 高)
+            apply_augment: 是否应用数据增强
+
+        Returns:
+            (灰度图像uint8, 类别ID)
+        """
+        width, height = size
+        class_id = self.char_vocab[char]
+
+        image = Image.new('L', (width, height), color=255)
+        draw = ImageDraw.Draw(image)
+
+        font_size = random.randint(int(height * 0.55), int(height * 0.85))
+        try:
+            font = ImageFont.truetype(self.font_path, font_size)
+        except Exception:
+            font = ImageFont.load_default()
+
+        bbox = draw.textbbox((0, 0), char, font=font)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+
+        # 随机位置偏移 (±10%) 增强位置不变性
+        offset_x = random.randint(-width // 10, width // 10)
+        offset_y = random.randint(-height // 10, height // 10)
+        x = (width - tw) // 2 + offset_x
+        y = (height - th) // 2 + offset_y
+
+        fill_gray = random.randint(0, 60)
+        draw.text((x, y), char, font=font, fill=fill_gray)
+
+        img_np = np.array(image)
+
+        if apply_augment:
+            img_np = self._augment_ocr_patch(img_np)
+
+        return img_np, class_id
+
+    def _augment_ocr_patch(self, image: np.ndarray) -> np.ndarray:
+        """OCR图像块专用数据增强
+        轻旋转、透视变形、笔画粗细变化、模糊、噪声；不做水平翻转（汉字翻转后含义改变）
+        """
+        h, w = image.shape[:2]
+
+        # 旋转 ±15度
+        if random.random() > 0.4:
+            angle = random.uniform(-15, 15)
+            M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
+            image = cv2.warpAffine(image, M, (w, h),
+                                   borderValue=255, flags=cv2.INTER_CUBIC)
+
+        # 轻微透视变形
+        if random.random() > 0.6:
+            pts1 = np.float32([[0, 0], [w, 0], [0, h], [w, h]])
+            d = w * 0.05
+            pts2 = np.float32([
+                [random.uniform(0, d), random.uniform(0, d)],
+                [w - random.uniform(0, d), random.uniform(0, d)],
+                [random.uniform(0, d), h - random.uniform(0, d)],
+                [w - random.uniform(0, d), h - random.uniform(0, d)],
+            ])
+            M = cv2.getPerspectiveTransform(pts1, pts2)
+            image = cv2.warpPerspective(image, M, (w, h), borderValue=255)
+
+        # 形态学变换模拟笔画粗细变化
+        if random.random() > 0.5:
+            k = random.choice([2, 3])
+            kernel = np.ones((k, k), np.uint8)
+            if random.random() > 0.5:
+                image = cv2.erode(image, kernel, iterations=1)
+            else:
+                image = cv2.dilate(image, kernel, iterations=1)
+
+        # 高斯模糊
+        if random.random() > 0.5:
+            ksize = random.choice([3, 5])
+            image = cv2.GaussianBlur(image, (ksize, ksize), 0)
+
+        # 背景噪声
+        if random.random() > 0.5:
+            noise = np.random.normal(0, 8, image.shape).astype(np.float32)
+            image = np.clip(image.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+
+        return image
+
+    def generate_ocr_dataset(self, samples_per_char: int = 50,
+                             patch_size: Tuple[int, int] = (64, 64),
+                             train_ratio: float = 0.7,
+                             val_ratio: float = 0.15,
+                             test_ratio: float = 0.15) -> dict:
+        """生成OCR训练数据集——为字符池中的每个字符生成多个样本
+
+        目录结构:
+            output_dir/ocr_data/{train,val,test}/char_{class_id}_{i}.png
+
+        Returns:
+            包含统计信息的元数据字典
+        """
+        ocr_dir = os.path.join(self.output_dir, 'ocr_data')
+        train_dir = os.path.join(ocr_dir, 'train')
+        val_dir = os.path.join(ocr_dir, 'val')
+        test_dir = os.path.join(ocr_dir, 'test')
+        for d in [train_dir, val_dir, test_dir]:
+            os.makedirs(d, exist_ok=True)
+
+        train_n = int(samples_per_char * train_ratio)
+        val_n = int(samples_per_char * val_ratio)
+
+        metadata = {
+            'patch_size': list(patch_size),
+            'samples_per_char': samples_per_char,
+            'num_classes': len(self.char_vocab),
+            'splits': {'train': 0, 'val': 0, 'test': 0},
+        }
+
+        # 保存字符映射表
+        vocab_path = os.path.join(ocr_dir, 'char_vocab.json')
+        with open(vocab_path, 'w', encoding='utf-8') as f:
+            json.dump(self.char_vocab, f, ensure_ascii=False, indent=2)
+
+        for char, class_id in tqdm(self.char_vocab.items(), desc='生成OCR字符块'):
+            for i in range(samples_per_char):
+                # 前25%干净样本，其余带增强
+                apply_aug = (i >= samples_per_char // 4)
+                img, _ = self.generate_ocr_patch(char, size=patch_size,
+                                                 apply_augment=apply_aug)
+                if i < train_n:
+                    out_dir = train_dir
+                    metadata['splits']['train'] += 1
+                elif i < train_n + val_n:
+                    out_dir = val_dir
+                    metadata['splits']['val'] += 1
+                else:
+                    out_dir = test_dir
+                    metadata['splits']['test'] += 1
+
+                filename = f"char_{class_id:04d}_{i:04d}.png"
+                cv2.imwrite(os.path.join(out_dir, filename), img)
+
+        meta_path = os.path.join(ocr_dir, 'ocr_metadata.json')
+        with open(meta_path, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+        print(f"OCR数据集生成完成: {metadata['splits']}")
+        return metadata
+
     def generate_dataset(self, samples_per_class: int = 500,
                         train_ratio: float = 0.7,
                         val_ratio: float = 0.15,

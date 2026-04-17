@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 嵌套字符检测器 - 基于深度学习和分形理论的综合识别系统
-包含：线性变换恢复、高斯金字塔、边缘密度分析、神经网络识别
+核心推理模块：线性变换恢复、高斯金字塔、边缘密度分析、神经网络识别
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
 import numpy as np
 import cv2
@@ -15,8 +14,7 @@ from PIL import Image
 from typing import List, Tuple, Dict, Optional
 from dataclasses import dataclass
 import os
-from tqdm import tqdm
-import matplotlib.pyplot as plt
+import json
 
 
 @dataclass
@@ -385,40 +383,103 @@ class NestedCharCNN(nn.Module):
         return x
 
 
-class NestedCharDataset(Dataset):
-    """嵌套字符数据集"""
-    
-    def __init__(self, image_paths: List[str], labels: List[int], 
-                 transform: Optional[transforms.Compose] = None):
-        self.image_paths: List[str] = image_paths
-        self.labels: List[int] = labels
-        self.transform: Optional[transforms.Compose] = transform
-        
-    def __len__(self) -> int:
-        return len(self.image_paths)
-    
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
-        # 加载图像
-        image = cv2.imread(self.image_paths[idx], cv2.IMREAD_GRAYSCALE)
-        
-        if image is None:
-            raise ValueError(f"无法加载图像: {self.image_paths[idx]}")
-        
-        # 调整大小
-        image = cv2.resize(image, (256, 256))
-        
-        # 转换为PIL图像
-        image = Image.fromarray(image)
-        
-        # 应用变换
-        if self.transform:
-            image = self.transform(image)
+class DualHeadNestedCharCNN(nn.Module):
+    """双头网络：共享ResNet-SE骨干 + 嵌套层分类头 + OCR字符识别头"""
+
+    def __init__(self, num_nesting_classes: int = 6, num_ocr_classes: int = 670):
+        super(DualHeadNestedCharCNN, self).__init__()
+
+        # 共享骨干（与NestedCharCNN完全一致）
+        self.stem = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=7, stride=2, padding=3, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        )
+        self.layer1 = self._make_layer(32, 64, num_blocks=2, stride=1)
+        self.layer2 = self._make_layer(64, 128, num_blocks=2, stride=2)
+        self.layer3 = self._make_layer(128, 256, num_blocks=2, stride=2)
+        self.layer4 = self._make_layer(256, 512, num_blocks=2, stride=2)
+        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+
+        # Head A: 嵌套层分类（原有任务）
+        self.nesting_head = nn.Sequential(
+            nn.Linear(512, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(256, num_nesting_classes)
+        )
+
+        # Head B: OCR字符识别（新任务，更宽的瓶颈层应对大类别数）
+        self.ocr_head = nn.Sequential(
+            nn.Linear(512, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.4),
+            nn.Linear(512, num_ocr_classes)
+        )
+
+    def _make_layer(self, in_channels: int, out_channels: int,
+                    num_blocks: int, stride: int) -> nn.Sequential:
+        layers = [ResidualBlock(in_channels, out_channels, stride)]
+        for _ in range(1, num_blocks):
+            layers.append(ResidualBlock(out_channels, out_channels, 1))
+        return nn.Sequential(*layers)
+
+    def _extract_features(self, x: torch.Tensor) -> torch.Tensor:
+        """共享骨干前向传播，返回512维特征向量"""
+        x = self.stem(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        x = self.global_pool(x)
+        return x.view(x.size(0), -1)
+
+    def forward(self, x: torch.Tensor, task: str = 'nesting') -> torch.Tensor:
+        """
+        Args:
+            x: 输入张量
+            task: 'nesting' | 'ocr' | 'both'
+        """
+        features = self._extract_features(x)
+        if task == 'nesting':
+            return self.nesting_head(features)
+        elif task == 'ocr':
+            return self.ocr_head(features)
+        elif task == 'both':
+            return self.nesting_head(features), self.ocr_head(features)
         else:
-            image = transforms.ToTensor()(image)
-        
-        label = self.labels[idx]
-        
-        return image, label
+            raise ValueError(f"未知任务 '{task}'，请使用 'nesting'、'ocr' 或 'both'")
+
+
+def load_nesting_weights_from_legacy(dual_model: DualHeadNestedCharCNN,
+                                     legacy_state_dict: dict) -> None:
+    """将旧版NestedCharCNN权重映射到DualHeadNestedCharCNN
+    旧键 'classifier.X' → 新键 'nesting_head.X'，骨干权重直接复制
+    """
+    new_state = dual_model.state_dict()
+    for old_key, tensor in legacy_state_dict.items():
+        if old_key.startswith('classifier.'):
+            new_key = old_key.replace('classifier.', 'nesting_head.', 1)
+        else:
+            new_key = old_key
+        if new_key in new_state and new_state[new_key].shape == tensor.shape:
+            new_state[new_key] = tensor
+    dual_model.load_state_dict(new_state)
+
+
+def freeze_backbone(model: DualHeadNestedCharCNN) -> None:
+    """冻结共享骨干参数"""
+    for layer in [model.stem, model.layer1, model.layer2, model.layer3, model.layer4]:
+        for p in layer.parameters():
+            p.requires_grad = False
+
+
+def unfreeze_backbone(model: DualHeadNestedCharCNN) -> None:
+    """解冻共享骨干参数"""
+    for layer in [model.stem, model.layer1, model.layer2, model.layer3, model.layer4]:
+        for p in layer.parameters():
+            p.requires_grad = True
 
 
 class OCRBoxGenerator:
@@ -441,12 +502,17 @@ class OCRBoxGenerator:
         char_size = pyramid_features.char_sizes[best_level]
         
         # 根据字符大小调整检测参数
+        level_h, level_w = gradient.shape[:2]
+        level_area = level_h * level_w
         if char_size > 0:
             min_area = int((char_size * 0.5) ** 2)
-            max_area = int((char_size * 3.0) ** 2)
+            area_from_char = int((char_size * 3.0) ** 2)
+            area_from_level = int(level_area * 0.35)
+            max_area = max(area_from_char, area_from_level)
+            max_area = min(max_area, int(level_area * 0.90))
         else:
             min_area = 100
-            max_area = 10000
+            max_area = int(level_area * 0.50)
         
         # 自适应二值化梯度图 - 使用Otsu替代固定百分位
         grad_normalized = cv2.normalize(gradient, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
@@ -466,6 +532,8 @@ class OCRBoxGenerator:
             
             if min_area <= area <= max_area:
                 x, y, w, h = cv2.boundingRect(contour)
+                if w * h > level_area * 0.95:
+                    continue
                 
                 # 缩放回原始图像尺寸
                 scale = 2 ** best_level
@@ -570,25 +638,60 @@ class OCRBoxGenerator:
 
 class NestedCharDetector:
     """嵌套字符检测器 - 整合所有模块的主类"""
-    
-    def __init__(self, model_path: Optional[str] = None):
+
+    def __init__(self, model_path: Optional[str] = None,
+                 use_dual_head: bool = False,
+                 char_vocab_path: Optional[str] = None,
+                 ocr_patch_size: int = 64):
         self.device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.transform_recovery: LinearTransformRecovery = LinearTransformRecovery()
         self.pyramid_analyzer: GaussianPyramidAnalyzer = GaussianPyramidAnalyzer()
         self.box_generator: OCRBoxGenerator = OCRBoxGenerator()
-        
+        self.use_dual_head: bool = use_dual_head
+        self.ocr_patch_size: int = ocr_patch_size
+
+        # 加载OCR字符映射表
+        self.id_to_char: Optional[Dict[int, str]] = None
+        num_ocr_classes = 670
+        if use_dual_head and char_vocab_path and os.path.exists(char_vocab_path):
+            with open(char_vocab_path, encoding='utf-8') as f:
+                char_vocab = json.load(f)
+            self.id_to_char = {int(v): k for k, v in char_vocab.items()}
+            num_ocr_classes = len(self.id_to_char)
+
         # 初始化神经网络模型
-        self.model: NestedCharCNN = NestedCharCNN(num_classes=6).to(self.device)
-        
+        if use_dual_head:
+            self.model = DualHeadNestedCharCNN(
+                num_nesting_classes=6,
+                num_ocr_classes=num_ocr_classes
+            ).to(self.device)
+        else:
+            self.model = NestedCharCNN(num_classes=6).to(self.device)
+
         if model_path and os.path.exists(model_path):
-            self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+            ckpt = torch.load(model_path, map_location=self.device, weights_only=False)
+            if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
+                self.model.load_state_dict(ckpt['model_state_dict'])
+            else:
+                # 兼容旧版权重格式
+                if use_dual_head and not any(k.startswith('nesting_head') for k in ckpt.keys()):
+                    load_nesting_weights_from_legacy(self.model, ckpt)
+                else:
+                    self.model.load_state_dict(ckpt)
             print(f"已加载模型: {model_path}")
-        
+
         self.model.eval()
-        
-        # 图像预处理
+
+        # 嵌套任务预处理 (256x256)
         self.transform: transforms.Compose = transforms.Compose([
             transforms.Resize((256, 256)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5], std=[0.5])
+        ])
+
+        # OCR任务预处理 (64x64)
+        self.ocr_transform: transforms.Compose = transforms.Compose([
+            transforms.Resize((ocr_patch_size, ocr_patch_size)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5], std=[0.5])
         ])
@@ -642,7 +745,10 @@ class NestedCharDetector:
         batch = torch.stack(augmented_images).to(self.device)
 
         with torch.no_grad():
-            outputs = self.model(batch)
+            if self.use_dual_head:
+                outputs = self.model(batch, task='nesting')
+            else:
+                outputs = self.model(batch)
             all_probs = F.softmax(outputs, dim=1)
             # 平均所有增强版本的概率
             avg_probs = torch.mean(all_probs, dim=0)
@@ -650,6 +756,67 @@ class NestedCharDetector:
             confidence = avg_probs[predicted_layers].item()
 
         return predicted_layers, confidence
+
+    def _recognize_chars_in_boxes(self, gray_image: np.ndarray,
+                                   boxes: List[Tuple[int, int, int, int]],
+                                   top_k: int = 3) -> List[Dict]:
+        """对每个检测框裁剪并通过OCR头识别字符
+
+        Args:
+            gray_image: 灰度图像 (H, W) uint8
+            boxes: 检测框列表 [(x, y, w, h), ...]
+            top_k: 每个框返回前k个候选字符
+
+        Returns:
+            每个框的识别结果 [{box, top_chars: [{char, confidence}], text}, ...]
+        """
+        if not self.use_dual_head or self.id_to_char is None:
+            return [{'box': b, 'top_chars': [], 'text': '?'} for b in boxes]
+
+        results = []
+        h_img, w_img = gray_image.shape[:2]
+
+        for box in boxes:
+            x, y, w, h = box
+            x1, y1 = max(0, x), max(0, y)
+            x2, y2 = min(w_img, x + w), min(h_img, y + h)
+
+            if x2 <= x1 or y2 <= y1:
+                results.append({'box': box, 'top_chars': [], 'text': '?'})
+                continue
+
+            patch = gray_image[y1:y2, x1:x2]
+
+            # 补成正方形
+            ph, pw = patch.shape
+            side = max(ph, pw)
+            square = np.full((side, side), 255, dtype=np.uint8)
+            sy = (side - ph) // 2
+            sx = (side - pw) // 2
+            square[sy:sy + ph, sx:sx + pw] = patch
+
+            pil_patch = Image.fromarray(square)
+            tensor = self.ocr_transform(pil_patch).unsqueeze(0).to(self.device)
+
+            with torch.no_grad():
+                logits = self.model(tensor, task='ocr')
+                probs = F.softmax(logits, dim=1)[0]
+
+            top_probs, top_ids = torch.topk(probs, k=min(top_k, len(probs)))
+
+            top_chars = [
+                {'char': self.id_to_char.get(idx.item(), '?'),
+                 'confidence': round(prob.item(), 4)}
+                for idx, prob in zip(top_ids, top_probs)
+            ]
+
+            results.append({
+                'box': box,
+                'top_chars': top_chars,
+                'text': top_chars[0]['char'] if top_chars else '?'
+            })
+
+        return results
 
     def detect(self, image_path: str) -> Dict:
         """完整的检测流程"""
@@ -696,7 +863,11 @@ class NestedCharDetector:
 
         # 6. 生成OCR检测框
         ocr_boxes = self.box_generator.generate_boxes(recovered_image, pyramid_features)
-        
+
+        # 6b. OCR字符识别（双头模式下）
+        gray_for_ocr = gray if len(recovered_image.shape) != 3 else cv2.cvtColor(recovered_image, cv2.COLOR_BGR2GRAY)
+        ocr_results = self._recognize_chars_in_boxes(gray_for_ocr, ocr_boxes)
+
         # 7. 整合结果
         result = {
             'image_path': image_path,
@@ -715,94 +886,10 @@ class NestedCharDetector:
                 'char_sizes': pyramid_features.char_sizes
             },
             'ocr_boxes': ocr_boxes,
-            'num_boxes': len(ocr_boxes)
+            'num_boxes': len(ocr_boxes),
+            'ocr_results': ocr_results,
+            'recognized_text': ''.join(r['text'] for r in ocr_results)
         }
         
         return result
     
-    def train(self, train_loader: DataLoader, val_loader: DataLoader, 
-             num_epochs: int = 50, learning_rate: float = 0.001,
-             save_path: str = 'models/nested_char_model.pth'):
-        """训练神经网络模型"""
-        self.model.train()
-        
-        criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=5
-        )
-        
-        best_val_loss = float('inf')
-        train_losses = []
-        val_losses = []
-        
-        for epoch in range(num_epochs):
-            # 训练阶段
-            self.model.train()
-            train_loss = 0.0
-            train_correct = 0
-            train_total = 0
-            
-            pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}')
-            for images, labels in pbar:
-                images = images.to(self.device)
-                labels = labels.to(self.device)
-                
-                optimizer.zero_grad()
-                outputs = self.model(images)
-                loss = criterion(outputs, labels)
-                loss.backward()
-                optimizer.step()
-                
-                train_loss += loss.item()
-                _, predicted = torch.max(outputs.data, 1)
-                train_total += labels.size(0)
-                train_correct += (predicted == labels).sum().item()
-                
-                pbar.set_postfix({
-                    'loss': f'{loss.item():.4f}',
-                    'acc': f'{100 * train_correct / train_total:.2f}%'
-                })
-            
-            avg_train_loss = train_loss / len(train_loader)
-            train_accuracy = 100 * train_correct / train_total
-            train_losses.append(avg_train_loss)
-            
-            # 验证阶段
-            self.model.eval()
-            val_loss = 0.0
-            val_correct = 0
-            val_total = 0
-            
-            with torch.no_grad():
-                for images, labels in val_loader:
-                    images = images.to(self.device)
-                    labels = labels.to(self.device)
-                    
-                    outputs = self.model(images)
-                    loss = criterion(outputs, labels)
-                    
-                    val_loss += loss.item()
-                    _, predicted = torch.max(outputs.data, 1)
-                    val_total += labels.size(0)
-                    val_correct += (predicted == labels).sum().item()
-            
-            avg_val_loss = val_loss / len(val_loader)
-            val_accuracy = 100 * val_correct / val_total
-            val_losses.append(avg_val_loss)
-            
-            print(f'\nEpoch {epoch+1}/{num_epochs}:')
-            print(f'  Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.2f}%')
-            print(f'  Val Loss: {avg_val_loss:.4f}, Val Acc: {val_accuracy:.2f}%')
-            
-            # 学习率调整
-            scheduler.step(avg_val_loss)
-            
-            # 保存最佳模型
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                torch.save(self.model.state_dict(), save_path)
-                print(f'  保存最佳模型到: {save_path}')
-        
-        return train_losses, val_losses

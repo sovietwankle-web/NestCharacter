@@ -1,0 +1,19 @@
+case: 07_nested_char_3_4layers
+expected_text: 
+detected_boxes: 6
+estimated_layers: 1
+confidence: 0.3897
+main_text: 
+all_text: 
+
+==== ui_demo report ====
+===== 检测结果 =====
+是否嵌套：是
+预测层数：1 层
+
+===== OCR识别结果（EasyOCR） =====
+未识别出可用文本。
+
+===== 字的大小 =====
+总字数：0 个
+

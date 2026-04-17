@@ -1,0 +1,23 @@
+case: 04_nested_l3
+expected_text: ??
+detected_boxes: 2
+estimated_layers: 4
+confidence: 0.7515
+main_text: 
+all_text: 
+
+==== ui_demo report ====
+===== 检测结果 =====
+是否嵌套：是
+预测层数：4 层
+
+===== OCR识别结果（EasyOCR） =====
+未识别出可用文本。
+
+===== 字的大小 =====
+总字数：119 个
+
+L1 大字（255,0,0框）：119 个
+  平均：4x4px
+  高度：4~4px
+

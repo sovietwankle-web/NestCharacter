@@ -1,0 +1,6 @@
+[2026-04-17 20:39:03] 脚本启动
+[2026-04-17 20:39:03] 预览图已生成: runs\preview_overlap_hardfix\preview\preview_layers_grid.png
+[2026-04-17 20:39:03] OCR预览图已生成: runs\preview_overlap_hardfix\preview\preview_ocr_grid.png
+[2026-04-17 20:39:03] 当前为预览模式，未执行训练。
+[2026-04-17 20:39:03] 请先检查预览图: runs\preview_overlap_hardfix\preview\preview_layers_grid.png 和 runs\preview_overlap_hardfix\preview\preview_ocr_grid.png
+[2026-04-17 20:39:03] 确认后可执行: python overnight_autotrain.py --run --generate-data --generate-ocr-data --run-name preview_overlap_hardfix_full

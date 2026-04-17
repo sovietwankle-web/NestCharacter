@@ -1,0 +1,5 @@
+{
+  "layer_grid": "runs\\preview_auto_noforce\\preview\\preview_layers_grid.png",
+  "ocr_grid": "runs\\preview_auto_noforce\\preview\\preview_ocr_grid.png",
+  "preview_dir": "runs\\preview_auto_noforce\\preview"
+}

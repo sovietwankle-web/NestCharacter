@@ -1,0 +1,19 @@
+{
+  "generator": "generate_dataset_copypaste.py",
+  "source_copy_file": "NestCharacter_copypaste.py",
+  "layer_min": 2,
+  "layer_max": 2,
+  "samples_per_class": 2,
+  "canvas_size": 1536,
+  "wrap_after": 12,
+  "depth_scale": 0.7,
+  "small_ratio_min": 0.03,
+  "small_ratio_max": 0.045,
+  "classes": {
+    "layer_2": {
+      "train_samples": 1,
+      "val_samples": 0,
+      "test_samples": 1
+    }
+  }
+}

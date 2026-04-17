@@ -21,7 +21,10 @@
       "Read(//tmp/**)",
       "Bash(pkill -f \"python\")",
       "Bash(taskkill //F //PID 15392)",
-      "Bash(taskkill //F //IM python.exe)"
+      "Bash(taskkill //F //IM python.exe)",
+      "Bash(python3 -c ':*)",
+      "Bash(grep -v '^$')",
+      "Bash(wait)"
     ],
     "deny": [],
     "ask": []

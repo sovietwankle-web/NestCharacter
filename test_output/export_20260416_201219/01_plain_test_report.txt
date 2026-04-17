@@ -1,0 +1,27 @@
+case: 01_plain_test
+expected_text: TEST
+detected_boxes: 1
+estimated_layers: 1
+confidence: 0.5202
+main_text: [
+all_text: [
+
+==== ui_demo report ====
+===== 检测结果 =====
+是否嵌套：是
+预测层数：1 层
+
+===== OCR识别结果（EasyOCR） =====
+主字优先文本：[
+综合文本：[
+主字候选数：1，细节候选数：0
+主字候选 (前6)：
+  '[' (1%) score=0.87 box=(400, 96, 448, 192)
+
+===== 字的大小 =====
+总字数：4 个
+
+L1 大字（255,0,0框）：4 个
+  平均：90x149px
+  高度：148~151px
+
