@@ -19,6 +19,7 @@ import tempfile
 import contextlib
 import io
 import cv2
+import NestCharacter as nest_original
 
 _STEP_CACHE = {}
 
@@ -861,6 +862,55 @@ def _save_png(path: str, rgb_array: np.ndarray):
     Image.fromarray(rgb_array, mode="RGB").save(path)
 
 
+def _generate_layer2_by_original_file(
+    out_path: str,
+    font_path: str,
+    silent: bool = True,
+) -> None:
+    """
+    二层样本严格走 NestCharacter.py 原始函数，不经过二次图像处理。
+    仅随机替换文本内容，其他关键参数保持原文件默认值。
+    """
+    wrap_after = 10
+    large_font_size = 400
+    small_font_size = 12
+    step_x = 13
+    step_y = 13
+
+    line_count = random.choice([2, 3])
+    large_text = "".join(random.choices(COMMON_CHARS, k=wrap_after * line_count))
+    small_text = "".join(random.choices(COMMON_CHARS, k=2200))
+
+    if silent:
+        with contextlib.redirect_stdout(io.StringIO()):
+            nest_original.create_text_fill_art(
+                large_text=large_text,
+                small_text=small_text,
+                large_font_size=large_font_size,
+                small_font_size=small_font_size,
+                font_path=font_path,
+                output_filename=out_path,
+                step_x=step_x,
+                step_y=step_y,
+                wrap_after=wrap_after,
+            )
+    else:
+        nest_original.create_text_fill_art(
+            large_text=large_text,
+            small_text=small_text,
+            large_font_size=large_font_size,
+            small_font_size=small_font_size,
+            font_path=font_path,
+            output_filename=out_path,
+            step_x=step_x,
+            step_y=step_y,
+            wrap_after=wrap_after,
+        )
+
+    if not os.path.exists(out_path):
+        raise RuntimeError(f"NestCharacter.py 未生成输出文件: {out_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="独立嵌套文字训练数据生成（复制版）")
     parser.add_argument("--font-path", type=str, default="C:/Windows/Fonts/msyh.ttc")
@@ -933,6 +983,7 @@ def main():
     metadata = {
         "generator": "generate_dataset_copypaste.py",
         "source_reference": "NestCharacter.py",
+        "layer2_source": "direct_NestCharacter.py_no_postprocess",
         "layer_min": args.layer_min,
         "layer_max": args.layer_max,
         "samples_per_class": args.samples_per_class,
@@ -953,22 +1004,6 @@ def main():
         print(f"\n生成 layer={layer} ...")
 
         for i in range(args.samples_per_class):
-            sample_debug = {} if (args.export_debug_json or args.export_box_overlay) else None
-            img = generate_nested_image(
-                layers=layer,
-                font_path=args.font_path,
-                canvas_size=runtime_canvas_size,
-                wrap_after=args.wrap_after,
-                base_large_font_size=args.base_large_font_size,
-                depth_scale=args.depth_scale,
-                small_ratio_min=args.small_ratio_min,
-                small_ratio_max=args.small_ratio_max,
-                silent=(not args.verbose),
-                debug_report=sample_debug,
-                collect_boxes=args.export_box_overlay,
-                separate_3_2=separate_3_2,
-            )
-
             if i < train_n:
                 split = "train"
                 idx = i
@@ -984,6 +1019,44 @@ def main():
 
             out_name = f"layer{layer}_{split}_{idx:04d}.png"
             out_path = os.path.join(args.out_dir, split, out_name)
+
+            # 用户要求：二层样本由原文件直接生成，且除文本外不做任何改动
+            if layer == 2:
+                _generate_layer2_by_original_file(
+                    out_path=out_path,
+                    font_path=args.font_path,
+                    silent=(not args.verbose),
+                )
+                if args.export_debug_json:
+                    debug_records.append({
+                        "layer": int(layer),
+                        "split": split,
+                        "index": int(idx),
+                        "filename": out_name,
+                        "overlay_filename": None,
+                        "debug": {
+                            "mode": "layer2_direct_from_NestCharacter.py",
+                            "postprocess": "none",
+                            "note": "only_text_randomized",
+                        },
+                    })
+                continue
+
+            sample_debug = {} if (args.export_debug_json or args.export_box_overlay) else None
+            img = generate_nested_image(
+                layers=layer,
+                font_path=args.font_path,
+                canvas_size=runtime_canvas_size,
+                wrap_after=args.wrap_after,
+                base_large_font_size=args.base_large_font_size,
+                depth_scale=args.depth_scale,
+                small_ratio_min=args.small_ratio_min,
+                small_ratio_max=args.small_ratio_max,
+                silent=(not args.verbose),
+                debug_report=sample_debug,
+                collect_boxes=args.export_box_overlay,
+                separate_3_2=separate_3_2,
+            )
             _save_png(out_path, img)
             if args.export_box_overlay and sample_debug is not None:
                 small_boxes = sample_debug.get("final_small_boxes", [])
