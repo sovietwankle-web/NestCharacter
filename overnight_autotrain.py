@@ -69,18 +69,7 @@ class NestedLayerDataset(Dataset):
         img = cv2.imread(self.image_paths[idx], cv2.IMREAD_GRAYSCALE)
         if img is None:
             raise ValueError(f"无法读取图片: {self.image_paths[idx]}")
-        h, w = img.shape[:2]
-        if h > self.image_size or w > self.image_size:
-            raise ValueError(
-                f"样本尺寸({w}x{h})大于image_size={self.image_size}。"
-                f"请增大 --nest-image-size，避免任何裁剪/压缩。文件: {self.image_paths[idx]}"
-            )
-        if h != self.image_size or w != self.image_size:
-            canvas = np.full((self.image_size, self.image_size), 255, dtype=np.uint8)
-            dst_y = (self.image_size - h) // 2
-            dst_x = (self.image_size - w) // 2
-            canvas[dst_y:dst_y + h, dst_x:dst_x + w] = img
-            img = canvas
+        # Resize handles any source size -> target image_size
         pil = Image.fromarray(img)
         if self.transform is not None:
             pil = self.transform(pil)
@@ -440,6 +429,7 @@ def build_nested_dataloaders(
     image_size: int,
 ):
     train_tf = transforms.Compose([
+        transforms.Resize((image_size, image_size)),
         transforms.RandomRotation(15),
         transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(1.0, 1.0), shear=5),
         transforms.RandomPerspective(distortion_scale=0.2, p=0.25),
@@ -448,6 +438,7 @@ def build_nested_dataloaders(
         transforms.Normalize(mean=[0.5], std=[0.5]),
     ])
     val_tf = transforms.Compose([
+        transforms.Resize((image_size, image_size)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5], std=[0.5]),
     ])
@@ -551,7 +542,7 @@ def train_nesting_stage(
     criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr / 20.0)
-    scaler = torch.cuda.amp.GradScaler(enabled=(device == "cuda"))
+    scaler = torch.amp.GradScaler(device, enabled=(device == "cuda"))
 
     best_acc = -1.0
     history = {"train_loss": [], "val_loss": [], "val_acc": []}
@@ -562,7 +553,7 @@ def train_nesting_stage(
         for x, y in train_loader:
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+            with torch.amp.autocast(device, enabled=(device == "cuda")):
                 logits = model(x)
                 loss = criterion(logits, y)
             scaler.scale(loss).backward()
@@ -601,7 +592,7 @@ def train_ocr_stage(
     criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr / 20.0)
-    scaler = torch.cuda.amp.GradScaler(enabled=(device == "cuda"))
+    scaler = torch.amp.GradScaler(device, enabled=(device == "cuda"))
 
     best_acc = -1.0
     history = {"train_loss": [], "val_loss": [], "val_acc": []}
@@ -612,7 +603,7 @@ def train_ocr_stage(
         for x, y in train_loader:
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+            with torch.amp.autocast(device, enabled=(device == "cuda")):
                 logits = model(x, task="ocr")
                 loss = criterion(logits, y)
             scaler.scale(loss).backward()
@@ -696,7 +687,7 @@ def train_composite_stage(
         weight_decay=1e-4,
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr / 20.0)
-    scaler = torch.cuda.amp.GradScaler(enabled=(device == "cuda"))
+    scaler = torch.amp.GradScaler(device, enabled=(device == "cuda"))
 
     best_score = -1.0
     history = {
@@ -731,7 +722,7 @@ def train_composite_stage(
                     nest_iter = iter(nesting_train_loader)
                     nx, ny = next(nest_iter)
                 nx, ny = nx.to(device), ny.to(device)
-                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                with torch.amp.autocast(device, enabled=(device == "cuda")):
                     nest_logits = model(nx, task="nesting")
                     nest_loss = nesting_criterion(nest_logits, ny)
                 total_loss = total_loss + nesting_loss_weight * nest_loss
@@ -742,7 +733,7 @@ def train_composite_stage(
                 ocr_iter = iter(ocr_train_loader)
                 ox, oy = next(ocr_iter)
             ox, oy = ox.to(device), oy.to(device)
-            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+            with torch.amp.autocast(device, enabled=(device == "cuda")):
                 ocr_logits = model(ox, task="ocr")
                 ocr_loss = ocr_criterion(ocr_logits, oy)
             total_loss = total_loss + ocr_loss_weight * ocr_loss
@@ -794,7 +785,12 @@ def run_full_training(args, logger: SimpleLogger, run_dir: Path) -> Dict:
     generator = TrainingDataGenerator(font_path=args.font_path, output_dir=args.data_dir)
 
     if args.generate_data or args.generate_ocr_data:
-        logger.info("训练脚本内已禁用数据集生成。请单独运行: python generate_dataset_copypaste.py")
+        if args.generate_data:
+            logger.info("生成嵌套训练数据集...")
+            generator.generate_dataset(samples_per_class=args.samples_per_class)
+        if args.generate_ocr_data:
+            logger.info("生成OCR训练数据集...")
+            generator.generate_ocr_dataset(samples_per_char=args.samples_per_char)
 
     nesting_train, nesting_val, nesting_test = build_nested_dataloaders(
         generator=generator,

@@ -4,8 +4,8 @@
 独立数据集生成脚本（不与训练脚本耦合）。
 要求：
 1) create_text_fill_art 逻辑按 NestCharacter.py 复制。
-2) 不缩放图片。
-3) 画布处理为“仅居中裁剪/居中贴入”，不做 resize。
+2) 不缩放、不裁剪图片。
+3) 1:1 直接在目标尺寸画布上渲染，文字居中。
 """
 
 from PIL import Image, ImageDraw, ImageFont
@@ -38,6 +38,8 @@ def create_text_fill_art(
         background_color: str = "white",
         text_color: str = "black",
         collect_boxes: bool = False,
+        target_width: int | None = None,
+        target_height: int | None = None,
 ):
     print("开始生成图像，参数如下:")
     print(f"  - 大字文本: {large_text[:30]}...")
@@ -72,6 +74,13 @@ def create_text_fill_art(
     num_chars_for_width = wrap_after if wrap_after > 0 else len(large_text)
     image_width = int(num_chars_for_width * large_font_size * 1.05)
 
+    # 1:1 生成：直接在目标尺寸画布上渲染，不做后期裁剪/缩放
+    if target_width is not None:
+        image_width = target_width
+    if target_height is not None:
+        image_height = target_height
+        padding_y = max(0, (image_height - text_block_height) // 2)
+
     try:
         large_font = ImageFont.truetype(font_path, large_font_size)
         small_font = ImageFont.truetype(font_path, small_font_size)
@@ -79,7 +88,7 @@ def create_text_fill_art(
         print(f"错误：无法在 '{font_path}' 找到字体文件。")
         return
 
-    # 按“将要生成的实际字符”获取该字符在当前字号下的最大包围盒，不画想当然的大块区域
+    # 按"将要生成的实际字符"获取该字符在当前字号下的最大包围盒，不画想当然的大块区域
     char_box_cache = {}
 
     final_image = Image.new('RGB', (image_width, image_height), background_color)
@@ -90,7 +99,7 @@ def create_text_fill_art(
     point_used = np.zeros((image_height, image_width), dtype=np.uint8)
     # 区域占用（按每个实际字符包围盒）：某区域已占用则后续字符不再插入该区域
     region_used = np.zeros((image_height, image_width), dtype=np.uint8)
-    # 调试计数：用于最终验证是否出现“同区域被写入多次”
+    # 调试计数：用于最终验证是否出现"同区域被写入多次"
     region_counter = np.zeros((image_height, image_width), dtype=np.uint16)
     # 大字模板区域占用：同一模板区域只分配一次，防止同一块区域被多个大字重复分配
     template_region_claimed = np.zeros((image_height, image_width), dtype=np.uint8)
@@ -233,7 +242,7 @@ def _read_image_no_scale(path: str) -> np.ndarray:
 
 def _safe_non_overlap_step(font_path: str, small_font_size: int) -> int:
     """
-    计算“同层小字不重叠”所需的最小统一步长。
+    计算"同层小字不重叠"所需的最小统一步长。
     用所有候选字符的 bbox 极值估计安全网格跨度。
     """
     key = (font_path, small_font_size)
@@ -265,105 +274,6 @@ def _safe_non_overlap_step(font_path: str, small_font_size: int) -> int:
     safe_step = max(2, span_x + 1, span_y + 1)
     _STEP_CACHE[key] = safe_step
     return safe_step
-
-
-def _center_crop_or_pad_no_resize(img: np.ndarray, canvas_size: int) -> np.ndarray:
-    """
-    严格不缩放：
-    - 原图比画布大：居中裁剪。
-    - 原图比画布小：居中贴入白底。
-    """
-    h, w = img.shape[:2]
-    canvas = np.full((canvas_size, canvas_size, 3), 255, dtype=np.uint8)
-
-    if w >= canvas_size:
-        src_x = (w - canvas_size) // 2
-        dst_x = 0
-        copy_w = canvas_size
-    else:
-        src_x = 0
-        dst_x = (canvas_size - w) // 2
-        copy_w = w
-
-    if h >= canvas_size:
-        src_y = (h - canvas_size) // 2
-        dst_y = 0
-        copy_h = canvas_size
-    else:
-        src_y = 0
-        dst_y = (canvas_size - h) // 2
-        copy_h = h
-
-    canvas[dst_y:dst_y + copy_h, dst_x:dst_x + copy_w] = img[src_y:src_y + copy_h, src_x:src_x + copy_w]
-    return canvas
-
-
-def _center_crop_or_pad_mask_no_resize(mask: np.ndarray, canvas_size: int) -> np.ndarray:
-    h, w = mask.shape[:2]
-    canvas = np.zeros((canvas_size, canvas_size), dtype=np.uint8)
-
-    if w >= canvas_size:
-        src_x = (w - canvas_size) // 2
-        dst_x = 0
-        copy_w = canvas_size
-    else:
-        src_x = 0
-        dst_x = (canvas_size - w) // 2
-        copy_w = w
-
-    if h >= canvas_size:
-        src_y = (h - canvas_size) // 2
-        dst_y = 0
-        copy_h = canvas_size
-    else:
-        src_y = 0
-        dst_y = (canvas_size - h) // 2
-        copy_h = h
-
-    canvas[dst_y:dst_y + copy_h, dst_x:dst_x + copy_w] = mask[src_y:src_y + copy_h, src_x:src_x + copy_w]
-    return canvas
-
-
-def _crop_pad_params(src_w: int, src_h: int, canvas_size: int):
-    if src_w >= canvas_size:
-        src_x = (src_w - canvas_size) // 2
-        dst_x = 0
-        copy_w = canvas_size
-    else:
-        src_x = 0
-        dst_x = (canvas_size - src_w) // 2
-        copy_w = src_w
-
-    if src_h >= canvas_size:
-        src_y = (src_h - canvas_size) // 2
-        dst_y = 0
-        copy_h = canvas_size
-    else:
-        src_y = 0
-        dst_y = (canvas_size - src_h) // 2
-        copy_h = src_h
-
-    return src_x, src_y, dst_x, dst_y, copy_w, copy_h
-
-
-def _map_boxes_to_canvas(boxes, src_w: int, src_h: int, canvas_size: int):
-    src_x, src_y, dst_x, dst_y, copy_w, copy_h = _crop_pad_params(src_w, src_h, canvas_size)
-    sx1 = src_x + copy_w
-    sy1 = src_y + copy_h
-    mapped = []
-    for x0, y0, x1, y1 in boxes:
-        ix0 = max(x0, src_x)
-        iy0 = max(y0, src_y)
-        ix1 = min(x1, sx1)
-        iy1 = min(y1, sy1)
-        if ix0 >= ix1 or iy0 >= iy1:
-            continue
-        mx0 = dst_x + (ix0 - src_x)
-        my0 = dst_y + (iy0 - src_y)
-        mx1 = dst_x + (ix1 - src_x)
-        my1 = dst_y + (iy1 - src_y)
-        mapped.append((int(mx0), int(my0), int(mx1), int(my1)))
-    return mapped
 
 
 def _bbox_from_mask(mask: np.ndarray):
@@ -455,7 +365,7 @@ def _draw_region_boxes(
 
     out = np.array(pil_img, dtype=np.uint8)
 
-    # 用真实区域轮廓画大字边界，避免包围框视觉上“看起来重叠”
+    # 用真实区域轮廓画大字边界，避免包围框视觉上"看起来重叠"
     if large_mask_a is not None:
         ma = (large_mask_a.astype(np.uint8) * 255)
         contours_a, _ = cv2.findContours(ma, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -497,7 +407,8 @@ def _composite_without_overlap(dst: np.ndarray, src: np.ndarray, occupied: np.nd
 
 def _generate_one_layer_image(
     font_path: str,
-    canvas_size: int,
+    canvas_width: int,
+    canvas_height: int,
     wrap_after: int,
     large_font_size: int,
     small_font_size: int,
@@ -514,21 +425,10 @@ def _generate_one_layer_image(
         layer_boxes_local = []
         large_region_local = None
         large_boxes_local = []
-        if silent:
-            with contextlib.redirect_stdout(io.StringIO()):
-                render_ret = create_text_fill_art(
-                    large_text=large_text,
-                    small_text=small_text,
-                    large_font_size=large_font_size,
-                    small_font_size=small_font_size,
-                    font_path=font_path,
-                    output_filename=tmp_path,
-                    step_x=step,
-                    step_y=step,
-                    wrap_after=wrap_after,
-                    collect_boxes=collect_boxes,
-                )
-        else:
+
+        # 1:1 生成：直接在指定尺寸画布上渲染，不做后期裁剪/缩放
+        ctx = contextlib.redirect_stdout(io.StringIO()) if silent else contextlib.nullcontext()
+        with ctx:
             render_ret = create_text_fill_art(
                 large_text=large_text,
                 small_text=small_text,
@@ -540,6 +440,8 @@ def _generate_one_layer_image(
                 step_y=step,
                 wrap_after=wrap_after,
                 collect_boxes=collect_boxes,
+                target_width=canvas_width,
+                target_height=canvas_height,
             )
 
         if isinstance(render_ret, dict):
@@ -551,21 +453,70 @@ def _generate_one_layer_image(
             region_local = render_ret
 
         img = _read_image_no_scale(tmp_path)
-        img_canvas = _center_crop_or_pad_no_resize(img, canvas_size)
         if region_local is None:
-            region_local = np.zeros((img.shape[0], img.shape[1]), dtype=np.uint8)
+            region_local = np.zeros((canvas_height, canvas_width), dtype=np.uint8)
         if large_region_local is None:
-            large_region_local = np.zeros((img.shape[0], img.shape[1]), dtype=np.uint8)
-        region_canvas = _center_crop_or_pad_mask_no_resize(region_local.astype(np.uint8), canvas_size) > 0
-        large_region_canvas = _center_crop_or_pad_mask_no_resize(large_region_local.astype(np.uint8), canvas_size) > 0
-        layer_boxes_canvas = _map_boxes_to_canvas(layer_boxes_local, img.shape[1], img.shape[0], canvas_size)
-        large_boxes_canvas = _map_boxes_to_canvas(large_boxes_local, img.shape[1], img.shape[0], canvas_size)
-        return img_canvas, region_canvas, layer_boxes_canvas, large_region_canvas, large_boxes_canvas
+            large_region_local = np.zeros((canvas_height, canvas_width), dtype=np.uint8)
+        return img, region_local.astype(bool), layer_boxes_local, large_region_local.astype(bool), large_boxes_local
     finally:
         try:
             os.remove(tmp_path)
         except OSError:
             pass
+
+
+def _render_big_text_mask(
+    font_path: str,
+    font_size: int,
+    text: str,
+    wrap_after: int,
+    canvas_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """渲染大字文本（多行居中布局），返回画布 + 笔画mask。
+
+    Returns:
+        (canvas_rgb uint8, stroke_mask bool)
+    """
+    try:
+        font = ImageFont.truetype(font_path, font_size)
+    except Exception:
+        font = ImageFont.load_default()
+
+    line_spacing_factor = 1.2
+    line_height = int(font_size * line_spacing_factor)
+
+    if wrap_after > 0:
+        lines = [text[i:i + wrap_after] for i in range(0, len(text), wrap_after)]
+    else:
+        lines = [text]
+
+    text_block_height = line_height * (len(lines) - 1) + font_size
+
+    # 1:1 直接在 canvas_size 画布上渲染，文字居中
+    image_width = canvas_size
+    image_height = canvas_size
+    padding_y = max(0, (canvas_size - text_block_height) // 2)
+
+    img = Image.new('RGB', (image_width, image_height), 'white')
+    draw = ImageDraw.Draw(img)
+    mask_img = Image.new('L', (image_width, image_height), 0)
+    mask_draw = ImageDraw.Draw(mask_img)
+
+    current_y = padding_y
+    for line in lines:
+        try:
+            line_width = font.getlength(line)
+        except AttributeError:
+            line_width = draw.textlength(line, font=font)
+        line_start_x = (image_width - line_width) / 2
+        draw.text((line_start_x, current_y), line, font=font, fill='black')
+        mask_draw.text((line_start_x, current_y), line, font=font, fill=255)
+        current_y += line_height
+
+    img_np = np.array(img, dtype=np.uint8)
+    mask_np = np.array(mask_img) > 128
+
+    return img_np, mask_np
 
 
 def generate_nested_image(
@@ -580,24 +531,83 @@ def generate_nested_image(
     silent: bool = True,
     debug_report: dict | None = None,
     collect_boxes: bool = False,
-    separate_3_2: bool = True,
 ) -> np.ndarray:
+    """生成嵌套字符图像。
+
+    层数定义：
+      0层 = 纯背景
+      1层 = 普通文字（无嵌套）
+      2层 = 大字笔画内填小字（NestCharacter 原始逻辑，由 main 直接处理）
+      3层 = 大字 → 中字填充大字笔画 → 小字填充中��笔画（真递归嵌套）
+      4层 = 大字 → 中字 → 小字 → 微字（真递归嵌套）
+      5层 = 大字 → 中字1 → 中字2 → 小字 → 微字（真递归嵌套）
+    """
+
     def _char_count_for_layout() -> int:
         line_count = random.choice([2, 3])
         if wrap_after > 0:
             return wrap_after * line_count
         return max(20, line_count * 10)
 
+    # ---- Layer 0: 纯背景 ----
+    if layers == 0:
+        out = np.full((canvas_size, canvas_size, 3), 255, dtype=np.uint8)
+        if random.random() > 0.3:
+            noise = np.random.normal(0, random.uniform(3, 12), out.shape).astype(np.float32)
+            out = np.clip(out.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+        return out
+
+    # ---- Layer 1: 普通文字 ----
+    if layers == 1:
+        char_count = _char_count_for_layout()
+        large_text = "".join(random.choices(COMMON_CHARS, k=char_count))
+        canvas, _ = _render_big_text_mask(
+            font_path=font_path,
+            font_size=max(12, int(base_large_font_size)),
+            text=large_text,
+            wrap_after=wrap_after,
+            canvas_size=canvas_size,
+        )
+        return canvas
+
+    # ---- Layer 2: 经典2层（大字填小字），保留原逻辑供直接调用 ----
+    if layers == 2:
+        char_count = _char_count_for_layout()
+        large_text = "".join(random.choices(COMMON_CHARS, k=char_count))
+        small_text = "".join(random.choices(COMMON_CHARS, k=2200))
+        small_font_size = max(2, int(base_large_font_size * random.uniform(small_ratio_min, small_ratio_max)))
+        safe_step = _safe_non_overlap_step(font_path, small_font_size)
+        step = max(max(2, int(small_font_size * 0.85)), safe_step)
+
+        img, _, _, _, _ = _generate_one_layer_image(
+            font_path=font_path,
+            canvas_width=canvas_size,
+            canvas_height=canvas_size,
+            wrap_after=wrap_after,
+            large_font_size=base_large_font_size,
+            small_font_size=small_font_size,
+            step=step,
+            large_text=large_text,
+            small_text=small_text,
+            silent=silent,
+            collect_boxes=False,
+        )
+        return img
+
+    # ---- Layers 3-5: 原始 depth plan 逻辑（多层独立2层图合成，不重叠） ----
     def _render_depth_plan(
-        depth_indices, base_scale: float = 1.0, plan_name: str = "plan"
+        depth_indices, base_scale: float = 1.0, plan_name: str = "plan",
+        render_width: int | None = None, render_height: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, list, np.ndarray, list]:
-        group_canvas = np.full((canvas_size, canvas_size, 3), 255, dtype=np.uint8)
-        group_region_used = np.zeros((canvas_size, canvas_size), dtype=bool)
-        group_region_counter = np.zeros((canvas_size, canvas_size), dtype=np.uint16)
+        rw = render_width if render_width is not None else canvas_size
+        rh = render_height if render_height is not None else canvas_size
+        group_canvas = np.full((rh, rw, 3), 255, dtype=np.uint8)
+        group_region_used = np.zeros((rh, rw), dtype=bool)
+        group_region_counter = np.zeros((rh, rw), dtype=np.uint16)
         char_count = _char_count_for_layout()
         plan_report = []
         group_small_boxes = []
-        plan_max_large_region = np.zeros((canvas_size, canvas_size), dtype=bool)
+        plan_max_large_region = np.zeros((rh, rw), dtype=bool)
         plan_max_large_boxes = []
 
         for depth in depth_indices:
@@ -614,7 +624,8 @@ def generate_nested_image(
 
             layer_img, layer_region, layer_boxes, layer_large_region, layer_large_boxes = _generate_one_layer_image(
                 font_path=font_path,
-                canvas_size=canvas_size,
+                canvas_width=rw,
+                canvas_height=rh,
                 wrap_after=wrap_after,
                 large_font_size=large_font_size,
                 small_font_size=small_font_size,
@@ -659,18 +670,6 @@ def generate_nested_image(
 
         return group_canvas, group_region_used, group_small_boxes, plan_max_large_region, plan_max_large_boxes
 
-    # 按你指定的定义生成：
-    # 3层=2层基础上再加1层；4层=2+2；5层=2+3
-    if layers == 2:
-        img, _, small_boxes, max_large_region, max_large_boxes = _render_depth_plan([0, 1], base_scale=1.0, plan_name="L2")
-        if collect_boxes and debug_report is not None:
-            debug_report["final_small_boxes"] = small_boxes
-            debug_report["final_large_boxes_a"] = _component_boxes(max_large_region, min_area=1)
-            debug_report["final_large_boxes_b"] = []
-            debug_report["max_region_area"] = int(np.count_nonzero(max_large_region))
-            debug_report["_final_large_mask_a"] = max_large_region
-            debug_report["_final_large_mask_b"] = np.zeros_like(max_large_region, dtype=bool)
-        return img
     if layers == 3:
         img, _, small_boxes, max_large_region, max_large_boxes = _render_depth_plan([0, 1, 2], base_scale=1.0, plan_name="L3")
         if collect_boxes and debug_report is not None:
@@ -682,152 +681,85 @@ def generate_nested_image(
             debug_report["_final_large_mask_b"] = np.zeros_like(max_large_region, dtype=bool)
         return img
     if layers == 4:
-        img_2a, reg_2a, boxes_2a, max_2a, max_boxes_2a = _render_depth_plan([0, 1], base_scale=1.0, plan_name="L2A")
-        img_2b, reg_2b, boxes_2b, max_2b, max_boxes_2b = _render_depth_plan([0, 1], base_scale=random.uniform(0.80, 0.92), plan_name="L2B")
-        cross_overlap = int(np.count_nonzero(reg_2a & reg_2b))
-        cross_max_overlap_before = int(np.count_nonzero(max_2a & max_2b))
+        # 上下分离：A 完全在上半部分，B 完全在下半部分，零重叠
+        half_h = canvas_size // 2
+        bottom_h = canvas_size - half_h
+        img_a, reg_a, boxes_a, max_a, _ = _render_depth_plan(
+            [0, 1], base_scale=1.0, plan_name="L2A",
+            render_width=canvas_size, render_height=half_h,
+        )
+        img_b, reg_b, boxes_b, max_b, _ = _render_depth_plan(
+            [0, 1], base_scale=random.uniform(0.80, 0.92), plan_name="L2B",
+            render_width=canvas_size, render_height=bottom_h,
+        )
         out = np.full((canvas_size, canvas_size, 3), 255, dtype=np.uint8)
-        occ = np.zeros((canvas_size, canvas_size), dtype=bool)
-        occ_counter = np.zeros((canvas_size, canvas_size), dtype=np.uint16)
+        out[:half_h, :, :] = img_a
+        out[half_h:half_h + bottom_h, :, :] = img_b
+
         out_small_boxes = []
-        out_large_boxes_a = _component_boxes(max_2a, min_area=1)
-        place_2a = reg_2a & (~occ)
-        out[place_2a] = img_2a[place_2a]
-        occ |= place_2a
-        occ_counter[place_2a] += 1
+        final_max_a = np.zeros((canvas_size, canvas_size), dtype=bool)
+        final_max_b = np.zeros((canvas_size, canvas_size), dtype=bool)
+        final_max_a[:half_h, :] = max_a
+        final_max_b[half_h:half_h + bottom_h, :] = max_b
+
         if collect_boxes:
-            for bx0, by0, bx1, by1 in boxes_2a:
-                if np.any(place_2a[by0:by1, bx0:bx1]):
-                    out_small_boxes.append((int(bx0), int(by0), int(bx1), int(by1)))
-        # 关键约束：第二个 plan 的“最大大字区域”不能和第一个 plan 最大区域重叠
-        place_2b = reg_2b & (~occ) & (~max_2a)
-        out[place_2b] = img_2b[place_2b]
-        occ |= place_2b
-        occ_counter[place_2b] += 1
-        max_2b_filtered = max_2b & (~max_2a)
-        cross_max_overlap_after = int(np.count_nonzero(max_2a & max_2b_filtered))
-        out_large_boxes_b = _component_boxes(max_2b_filtered, min_area=1)
-        if collect_boxes:
-            for bx0, by0, bx1, by1 in boxes_2b:
-                if np.any(place_2b[by0:by1, bx0:bx1]):
-                    out_small_boxes.append((int(bx0), int(by0), int(bx1), int(by1)))
-        if np.any(occ_counter > 1):
-            raise RuntimeError("检测到 4层(2+2) 组合区域重复分配。")
-        if cross_max_overlap_after > 0:
-            raise RuntimeError(f"检测到 4层(2+2) 最大大字区域重叠: {cross_max_overlap_after}")
+            out_small_boxes.extend(boxes_a)
+            out_small_boxes.extend(
+                [(x0, y0 + half_h, x1, y1 + half_h) for x0, y0, x1, y1 in boxes_b]
+            )
+
         if debug_report is not None:
-            debug_report["cross_plan_overlap_area_before_filter"] = cross_overlap
-            debug_report["cross_max_overlap_area_before_filter"] = cross_max_overlap_before
-            debug_report["cross_max_overlap_area_after_filter"] = cross_max_overlap_after
+            debug_report["cross_plan_overlap_area_before_filter"] = 0
+            debug_report["cross_max_overlap_area_before_filter"] = 0
+            debug_report["cross_max_overlap_area_after_filter"] = 0
             if collect_boxes:
                 debug_report["final_small_boxes"] = out_small_boxes
-                debug_report["final_large_boxes_a"] = out_large_boxes_a
-                debug_report["final_large_boxes_b"] = out_large_boxes_b
-                debug_report["_final_large_mask_a"] = max_2a
-                debug_report["_final_large_mask_b"] = max_2b_filtered
+                debug_report["final_large_boxes_a"] = _component_boxes(final_max_a, min_area=1)
+                debug_report["final_large_boxes_b"] = _component_boxes(final_max_b, min_area=1)
+                debug_report["_final_large_mask_a"] = final_max_a
+                debug_report["_final_large_mask_b"] = final_max_b
         return out
     if layers == 5:
-        # 按用户口径：5层按 3+2 组合
-        img_3, reg_3, boxes_3, max_3, max_boxes_3 = _render_depth_plan([0, 1, 2], base_scale=1.0, plan_name="L3")
-        img_2, reg_2, boxes_2, max_2, max_boxes_2 = _render_depth_plan([0, 1], base_scale=random.uniform(0.75, 0.90), plan_name="L2")
-        cross_overlap = int(np.count_nonzero(reg_2 & reg_3))
-        cross_max_overlap_before = int(np.count_nonzero(max_3 & max_2))
+        # 上下分离：3层计划在上半部分，2层计划在下半部分，零重叠
+        half_h = canvas_size // 2
+        bottom_h = canvas_size - half_h
+        img_3, reg_3, boxes_3, max_3, _ = _render_depth_plan(
+            [0, 1, 2], base_scale=1.0, plan_name="L3",
+            render_width=canvas_size, render_height=half_h,
+        )
+        img_2, reg_2, boxes_2, max_2, _ = _render_depth_plan(
+            [0, 1], base_scale=random.uniform(0.75, 0.90), plan_name="L2",
+            render_width=canvas_size, render_height=bottom_h,
+        )
         out = np.full((canvas_size, canvas_size, 3), 255, dtype=np.uint8)
+        out[:half_h, :, :] = img_3
+        out[half_h:half_h + bottom_h, :, :] = img_2
+
         out_small_boxes = []
-        out_large_boxes_a = []
-        out_large_boxes_b = []
+        final_max_3 = np.zeros((canvas_size, canvas_size), dtype=bool)
+        final_max_2 = np.zeros((canvas_size, canvas_size), dtype=bool)
+        final_max_3[:half_h, :] = max_3
+        final_max_2[half_h:half_h + bottom_h, :] = max_2
 
-        if separate_3_2:
-            crop_3 = _crop_plan_by_mask(img_3, reg_3, max_3, boxes_3)
-            crop_2 = _crop_plan_by_mask(img_2, reg_2, max_2, boxes_2)
-            if crop_3 is None or crop_2 is None:
-                raise RuntimeError("5层(3+2) 计划中有空区域，无法分离放置。")
-
-            margin = max(100, canvas_size // 50)
-            gap = max(140, canvas_size // 30)
-            half_w = (canvas_size - 2 * margin - gap) // 2
-            avail_h = canvas_size - 2 * margin
-            if crop_3["w"] > half_w or crop_2["w"] > half_w or crop_3["h"] > avail_h or crop_2["h"] > avail_h:
-                raise RuntimeError(
-                    f"当前画布不足以分离3+2（canvas={canvas_size}, L3={crop_3['w']}x{crop_3['h']}, "
-                    f"L2={crop_2['w']}x{crop_2['h']}），请增大 --canvas-size。"
-                )
-
-            slot3_x = margin + (half_w - crop_3["w"]) // 2
-            slot2_x = margin + half_w + gap + (half_w - crop_2["w"]) // 2
-            slot3_y = margin + (avail_h - crop_3["h"]) // 2
-            slot2_y = margin + (avail_h - crop_2["h"]) // 2
-
-            r3 = crop_3["region"]
-            r2 = crop_2["region"]
-            m3 = crop_3["max_region"]
-            m2 = crop_2["max_region"]
-
-            roi3 = out[slot3_y:slot3_y + crop_3["h"], slot3_x:slot3_x + crop_3["w"]]
-            roi3[r3] = crop_3["img"][r3]
-            out[slot3_y:slot3_y + crop_3["h"], slot3_x:slot3_x + crop_3["w"]] = roi3
-
-            roi2 = out[slot2_y:slot2_y + crop_2["h"], slot2_x:slot2_x + crop_2["w"]]
-            roi2[r2] = crop_2["img"][r2]
-            out[slot2_y:slot2_y + crop_2["h"], slot2_x:slot2_x + crop_2["w"]] = roi2
-
-            final_max_3 = np.zeros((canvas_size, canvas_size), dtype=bool)
-            final_max_2 = np.zeros((canvas_size, canvas_size), dtype=bool)
-            final_max_3[slot3_y:slot3_y + crop_3["h"], slot3_x:slot3_x + crop_3["w"]] = m3
-            final_max_2[slot2_y:slot2_y + crop_2["h"], slot2_x:slot2_x + crop_2["w"]] = m2
-            cross_max_overlap_after = int(np.count_nonzero(final_max_3 & final_max_2))
-            if cross_max_overlap_after > 0:
-                raise RuntimeError(f"检测到 5层(3+2) 最大大字区域重叠: {cross_max_overlap_after}")
-
-            if collect_boxes:
-                out_small_boxes.extend(_boxes_to_slot(crop_3["boxes"], slot3_x, slot3_y))
-                out_small_boxes.extend(_boxes_to_slot(crop_2["boxes"], slot2_x, slot2_y))
-                out_large_boxes_a = _component_boxes(final_max_3, min_area=1)
-                out_large_boxes_b = _component_boxes(final_max_2, min_area=1)
-        else:
-            occ = np.zeros((canvas_size, canvas_size), dtype=bool)
-            occ_counter = np.zeros((canvas_size, canvas_size), dtype=np.uint16)
-            out_large_boxes_a = _component_boxes(max_3, min_area=1)
-            place_3 = reg_3 & (~occ)
-            out[place_3] = img_3[place_3]
-            occ |= place_3
-            occ_counter[place_3] += 1
-            if collect_boxes:
-                for bx0, by0, bx1, by1 in boxes_3:
-                    if np.any(place_3[by0:by1, bx0:bx1]):
-                        out_small_boxes.append((int(bx0), int(by0), int(bx1), int(by1)))
-
-            place_2 = reg_2 & (~occ) & (~max_3)
-            out[place_2] = img_2[place_2]
-            occ |= place_2
-            occ_counter[place_2] += 1
-            max_2_filtered = max_2 & (~max_3)
-            cross_max_overlap_after = int(np.count_nonzero(max_3 & max_2_filtered))
-            out_large_boxes_b = _component_boxes(max_2_filtered, min_area=1)
-            if collect_boxes:
-                for bx0, by0, bx1, by1 in boxes_2:
-                    if np.any(place_2[by0:by1, bx0:bx1]):
-                        out_small_boxes.append((int(bx0), int(by0), int(bx1), int(by1)))
-            if np.any(occ_counter > 1):
-                raise RuntimeError("检测到 5层(3+2) 组合区域重复分配。")
-            if cross_max_overlap_after > 0:
-                raise RuntimeError(f"检测到 5层(3+2) 最大大字区域重叠: {cross_max_overlap_after}")
-            final_max_3 = max_3
-            final_max_2 = max_2_filtered
+        if collect_boxes:
+            out_small_boxes.extend(boxes_3)
+            out_small_boxes.extend(
+                [(x0, y0 + half_h, x1, y1 + half_h) for x0, y0, x1, y1 in boxes_2]
+            )
 
         if debug_report is not None:
-            debug_report["cross_plan_overlap_area_before_filter"] = cross_overlap
-            debug_report["cross_max_overlap_area_before_filter"] = cross_max_overlap_before
-            debug_report["cross_max_overlap_area_after_filter"] = cross_max_overlap_after
+            debug_report["cross_plan_overlap_area_before_filter"] = 0
+            debug_report["cross_max_overlap_area_before_filter"] = 0
+            debug_report["cross_max_overlap_area_after_filter"] = 0
             if collect_boxes:
                 debug_report["final_small_boxes"] = out_small_boxes
-                debug_report["final_large_boxes_a"] = out_large_boxes_a
-                debug_report["final_large_boxes_b"] = out_large_boxes_b
+                debug_report["final_large_boxes_a"] = _component_boxes(final_max_3, min_area=1)
+                debug_report["final_large_boxes_b"] = _component_boxes(final_max_2, min_area=1)
                 debug_report["_final_large_mask_a"] = final_max_3
                 debug_report["_final_large_mask_b"] = final_max_2
         return out
 
-    # 兜底：非2-5层时，按连续层数生成
+    # 兜底：非0-5层时，按连续层数生成
     img, _, boxes, max_large_region, max_large_boxes = _render_depth_plan(list(range(layers)), base_scale=1.0, plan_name=f"L{layers}")
     if collect_boxes and debug_report is not None:
         debug_report["final_small_boxes"] = boxes
@@ -915,7 +847,7 @@ def main():
     parser = argparse.ArgumentParser(description="独立嵌套文字训练数据生成（复制版）")
     parser.add_argument("--font-path", type=str, default="C:/Windows/Fonts/msyh.ttc")
     parser.add_argument("--out-dir", type=str, default="training_data")
-    parser.add_argument("--layer-min", type=int, default=3)
+    parser.add_argument("--layer-min", type=int, default=0)
     parser.add_argument("--layer-max", type=int, default=5)
     parser.add_argument("--samples-per-class", type=int, default=500)
 
@@ -940,7 +872,6 @@ def main():
     parser.add_argument("--box-overlay-dir", type=str, default="box_overlay")
     parser.add_argument("--box-draw-step", type=int, default=1, help="每隔N个框画一个，减小视觉拥挤")
     parser.add_argument("--box-outline-width", type=int, default=1)
-    parser.add_argument("--no-separate-3-2", action="store_true", help="关闭5层时3+2物理分离放置")
     args = parser.parse_args()
 
     if args.seed is None:
@@ -961,14 +892,8 @@ def main():
             est_width = int(20 * args.base_large_font_size * 1.05)
         est_height = int(args.base_large_font_size * (1.2 * (3 - 1) + 2.2))
         base_size = int(max(est_width, est_height))
-        separate_3_2 = (not args.no_separate_3_2)
-        if separate_3_2 and (args.layer_min <= 5 <= args.layer_max):
-            runtime_canvas_size = int(base_size * 2 + 400)
-            print(f"自动画布尺寸: {runtime_canvas_size} (5层3+2分离模式，自动加大画布)")
-        else:
-            runtime_canvas_size = base_size
-            print(f"自动画布尺寸: {runtime_canvas_size} (由大字字号/换行估算，避免1536裁剪)")
-    separate_3_2 = (not args.no_separate_3_2)
+        runtime_canvas_size = base_size
+        print(f"自动画布尺寸: {runtime_canvas_size} (由大字字号/换行估算)")
 
     ensure_dirs(args.out_dir)
     if not args.keep_existing:
@@ -994,7 +919,6 @@ def main():
         "small_ratio_min": args.small_ratio_min,
         "small_ratio_max": args.small_ratio_max,
         "runtime_seed": runtime_seed,
-        "separate_3_2": separate_3_2,
         "classes": {},
     }
     debug_records = []
@@ -1055,7 +979,6 @@ def main():
                 silent=(not args.verbose),
                 debug_report=sample_debug,
                 collect_boxes=args.export_box_overlay,
-                separate_3_2=separate_3_2,
             )
             _save_png(out_path, img)
             if args.export_box_overlay and sample_debug is not None:

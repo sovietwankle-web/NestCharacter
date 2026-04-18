@@ -282,8 +282,8 @@ def main():
                        help='嵌套数据每类样本数量')
     parser.add_argument('--samples-per-char', type=int, default=50,
                        help='OCR数据每字符样本数量')
-    parser.add_argument('--font-path', type=str, default='C:/Windows/Fonts/simhei.ttf',
-                       help='字体文件路径')
+    parser.add_argument('--font-path', type=str, default=None,
+                       help='字体文件路径 (不指定则自动检测)')
     parser.add_argument('--data-dir', type=str, default='training_data',
                        help='数据集目录')
     parser.add_argument('--ocr-data-dir', type=str, default='training_data/ocr_data',
@@ -314,6 +314,27 @@ def main():
                        help='恢复训练的模型路径')
 
     args = parser.parse_args()
+
+    # 自动检测字体路径
+    if args.font_path is None:
+        import platform
+        if platform.system() == 'Windows':
+            args.font_path = 'C:/Windows/Fonts/simhei.ttf'
+        else:
+            # Linux: 尝试常见CJK字体路径
+            candidates = [
+                '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+                '/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc',
+                '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc',
+                '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
+                '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+            ]
+            args.font_path = candidates[0]  # default fallback
+            for c in candidates:
+                if os.path.isfile(c):
+                    args.font_path = c
+                    break
+        print(f"使用字体: {args.font_path}")
 
     # 创建模型保存目录
     os.makedirs(os.path.dirname(args.model_save_path), exist_ok=True)
@@ -428,11 +449,11 @@ def main():
             transforms.Normalize(mean=[0.5], std=[0.5])
         ])
 
-        ocr_train_dataset = OCRPatchDataset(ocr_train_dir, patch_size=ocr_patch_size,
+        ocr_train_dataset = OCRPatchDataset(ocr_train_dir,
                                             transform=ocr_train_transform)
-        ocr_val_dataset = OCRPatchDataset(ocr_val_dir, patch_size=ocr_patch_size,
+        ocr_val_dataset = OCRPatchDataset(ocr_val_dir,
                                           transform=ocr_val_transform)
-        ocr_test_dataset = OCRPatchDataset(ocr_test_dir, patch_size=ocr_patch_size,
+        ocr_test_dataset = OCRPatchDataset(ocr_test_dir,
                                            transform=ocr_val_transform)
 
         print(f"OCR数据集 — 训练: {len(ocr_train_dataset)}, 验证: {len(ocr_val_dataset)}, 测试: {len(ocr_test_dataset)}")

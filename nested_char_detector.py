@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms as transforms
+from torch.utils.data import Dataset
 import numpy as np
 import cv2
 from PIL import Image
@@ -480,6 +481,56 @@ def unfreeze_backbone(model: DualHeadNestedCharCNN) -> None:
     for layer in [model.stem, model.layer1, model.layer2, model.layer3, model.layer4]:
         for p in layer.parameters():
             p.requires_grad = True
+
+
+class NestedCharDataset(Dataset):
+    """嵌套层分类数据集 — 读取灰度图，应用transform"""
+
+    def __init__(self, image_paths: List[str], labels: List[int], transform=None):
+        self.image_paths = image_paths
+        self.labels = labels
+        self.transform = transform
+
+    def __len__(self) -> int:
+        return len(self.image_paths)
+
+    def __getitem__(self, idx: int):
+        img = cv2.imread(self.image_paths[idx], cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            raise ValueError(f"无法读取图片: {self.image_paths[idx]}")
+        pil = Image.fromarray(img)
+        if self.transform is not None:
+            pil = self.transform(pil)
+        return pil, self.labels[idx]
+
+
+class OCRPatchDataset(Dataset):
+    """OCR字符块数据集 — 读取 char_XXXX_XXXX.png 文件"""
+
+    def __init__(self, data_dir: str, transform=None):
+        self.data_dir = data_dir
+        self.transform = transform
+        self.samples: List[Tuple[str, int]] = []
+
+        for filename in sorted(os.listdir(data_dir)):
+            if filename.endswith('.png') and filename.startswith('char_'):
+                parts = filename.replace('.png', '').split('_')
+                if len(parts) >= 3:
+                    label = int(parts[1])
+                    self.samples.append((os.path.join(data_dir, filename), label))
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int):
+        path, label = self.samples[idx]
+        img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            raise ValueError(f"无法读取OCR图片: {path}")
+        pil = Image.fromarray(img)
+        if self.transform is not None:
+            pil = self.transform(pil)
+        return pil, label
 
 
 class OCRBoxGenerator:
