@@ -471,15 +471,16 @@ def build_ocr_dataloaders(
     ocr_data_dir: Path,
     batch_size: int,
     num_workers: int,
+    image_size: int = 256,
 ):
     tf_train = transforms.Compose([
-        transforms.Resize((64, 64)),
+        transforms.Resize((image_size, image_size)),
         transforms.RandomRotation(8),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5], std=[0.5]),
     ])
     tf_val = transforms.Compose([
-        transforms.Resize((64, 64)),
+        transforms.Resize((image_size, image_size)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5], std=[0.5]),
     ])
@@ -660,13 +661,10 @@ def train_composite_stage(
     nesting_state = torch.load(nesting_state_path, map_location=device, weights_only=False)
     load_nesting_weights_from_legacy(model, nesting_state)
 
-    ocr_ckpt = torch.load(ocr_ckpt_path, map_location=device, weights_only=False)
-    ocr_state = ocr_ckpt["model_state_dict"] if "model_state_dict" in ocr_ckpt else ocr_ckpt
-    current_state = model.state_dict()
-    for k, v in ocr_state.items():
-        if k.startswith("ocr_head.") and k in current_state and current_state[k].shape == v.shape:
-            current_state[k] = v
-    model.load_state_dict(current_state)
+    # 不从 OCR ckpt 加载 ocr_head：OCR 阶段的 backbone 与 nesting backbone 不同，
+    # 直接移植 ocr_head 会导致特征空间不匹配（实测 val_ocr_acc 退化到~1%）。
+    # 让 ocr_head 在 composite 阶段基于 nesting backbone 从头联合训练。
+    logger.info("[COMP] 跳过 ocr_head 权重移植（避免 backbone/head 不兼容），ocr_head 将联合训练")
 
     nesting_criterion = nn.CrossEntropyLoss(label_smoothing=0.03)
     ocr_criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
@@ -804,6 +802,7 @@ def run_full_training(args, logger: SimpleLogger, run_dir: Path) -> Dict:
         ocr_data_dir=Path(args.ocr_data_dir),
         batch_size=args.batch_size_ocr,
         num_workers=args.num_workers,
+        image_size=args.nest_image_size,
     )
 
     num_nesting_classes = args.layer_max - args.layer_min + 1
