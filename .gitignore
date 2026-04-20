@@ -12,3 +12,24 @@ build/
 *.swp
 *.swo
 temp_*
+training_data/
+  runs/
+  _feasibility_test/
+  _disk_test/
+  _disk_test.py
+  _profile_gen.py
+  _test_*.png
+  _test_*_preview.png
+  sample_preview/
+  box_overlay/
+  *.pth
+  *.pt
+  nohup.out
+  run.log
+
+training_data/
+runs/
+*.pth
+*.pt
+nohup.out
+run.log
