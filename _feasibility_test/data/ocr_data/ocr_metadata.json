@@ -1,0 +1,13 @@
+{
+  "patch_size": [
+    64,
+    64
+  ],
+  "samples_per_char": 2,
+  "num_classes": 562,
+  "splits": {
+    "train": 562,
+    "val": 0,
+    "test": 562
+  }
+}

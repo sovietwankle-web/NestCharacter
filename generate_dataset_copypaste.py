@@ -31,7 +31,7 @@ def create_text_fill_art(
         large_font_size: int,
         small_font_size: int,
         font_path: str,
-        output_filename: str,
+        output_filename: str | None,
         step_x: int,
         step_y: int,
         wrap_after: int,
@@ -123,30 +123,75 @@ def create_text_fill_art(
         for char in line:
             print(f"  - 正在处理大字: '{char}'")
 
-            if collect_boxes:
-                lb = large_font.getbbox(char)
-                if lb is not None:
-                    ll, lt, lr, lbm = lb
-                    lx0 = int(current_x + ll)
-                    ly0 = int(current_y + lt)
-                    lx1 = int(current_x + lr)
-                    ly1 = int(current_y + lbm)
-                    clx0 = max(0, lx0)
-                    cly0 = max(0, ly0)
-                    clx1 = min(image_width, lx1)
-                    cly1 = min(image_height, ly1)
-                    if clx0 < clx1 and cly0 < cly1:
-                        large_boxes.append((clx0, cly0, clx1, cly1))
+            # 只在大字的 bbox 内创建 mask，避免全画布分配（大幅加速）
+            lb = large_font.getbbox(char)
+            if lb is None:
+                try:
+                    char_width_step = large_font.getlength(char)
+                except AttributeError:
+                    char_width_step = draw_final.textlength(char, font=large_font)
+                current_x += char_width_step
+                continue
 
-            char_mask = Image.new('L', (image_width, image_height), 0)
-            draw_char_mask = ImageDraw.Draw(char_mask)
-            draw_char_mask.text((current_x, current_y), char, font=large_font, fill=255)
-            char_mask_array = np.array(char_mask) > 128
-            char_fill_mask = char_mask_array & (template_region_claimed == 0)
+            ll, lt, lr, lbm = lb
+            lx0 = int(current_x + ll)
+            ly0 = int(current_y + lt)
+            lx1 = int(current_x + lr)
+            ly1 = int(current_y + lbm)
+            clx0 = max(0, lx0)
+            cly0 = max(0, ly0)
+            clx1 = min(image_width, lx1)
+            cly1 = min(image_height, ly1)
 
-            for y in range(0, image_height, final_step_y):
-                for x in range(0, image_width, final_step_x):
-                    if char_fill_mask[y, x] and point_used[y, x] == 0:
+            if collect_boxes and clx0 < clx1 and cly0 < cly1:
+                large_boxes.append((clx0, cly0, clx1, cly1))
+
+            if clx0 >= clx1 or cly0 >= cly1:
+                # 字符完全在画布外，跳过
+                try:
+                    char_width_step = large_font.getlength(char)
+                except AttributeError:
+                    char_width_step = draw_final.textlength(char, font=large_font)
+                current_x += char_width_step
+                continue
+
+            # 在局部 bbox 内渲染 mask（尺寸 = 大字本身，不是整张图）
+            local_w = lx1 - lx0
+            local_h = ly1 - ly0
+            local_mask = Image.new('L', (local_w, local_h), 0)
+            ImageDraw.Draw(local_mask).text((-ll, -lt), char, font=large_font, fill=255)
+            local_arr = np.array(local_mask) > 128
+
+            # 映射到全画布坐标的裁剪区域
+            dst_y0 = cly0
+            dst_y1 = cly1
+            dst_x0 = clx0
+            dst_x1 = clx1
+            src_y0 = dst_y0 - ly0
+            src_y1 = src_y0 + (dst_y1 - dst_y0)
+            src_x0 = dst_x0 - lx0
+            src_x1 = src_x0 + (dst_x1 - dst_x0)
+            local_clip = local_arr[src_y0:src_y1, src_x0:src_x1]
+
+            char_fill_local = local_clip & (template_region_claimed[dst_y0:dst_y1, dst_x0:dst_x1] == 0)
+
+            # 只在大字 bbox 范围内扫描
+            y_start = (dst_y0 // final_step_y) * final_step_y
+            if y_start < dst_y0:
+                y_start += final_step_y
+            x_start = (dst_x0 // final_step_x) * final_step_x
+            if x_start < dst_x0:
+                x_start += final_step_x
+
+            for y in range(y_start, dst_y1, final_step_y):
+                ly_loc = y - dst_y0
+                if ly_loc < 0 or ly_loc >= char_fill_local.shape[0]:
+                    continue
+                for x in range(x_start, dst_x1, final_step_x):
+                    lx_loc = x - dst_x0
+                    if lx_loc < 0 or lx_loc >= char_fill_local.shape[1]:
+                        continue
+                    if char_fill_local[ly_loc, lx_loc] and point_used[y, x] == 0:
                         char_to_draw = small_text[small_text_index % len(small_text)]
 
                         if char_to_draw not in char_box_cache:
@@ -185,7 +230,7 @@ def create_text_fill_art(
                         point_used[y, x] = 1
 
             # 无论该区域是否成功插入小字，模板区域只允许第一次被分配
-            template_region_claimed[char_mask_array] = 1
+            template_region_claimed[dst_y0:dst_y1, dst_x0:dst_x1][local_clip] = 1
 
             try:
                 char_width = large_font.getlength(char)
@@ -203,20 +248,22 @@ def create_text_fill_art(
     if overlap_area > 0:
         raise RuntimeError(f"检测到区域重叠面积 {overlap_area}，已中止保存。")
 
-    final_image.save(output_filename)
+    if output_filename is not None:
+        final_image.save(output_filename)
+        print(f"图像已保存为: {output_filename}")
     end_time = time.time()
     print("-" * 30)
-    print(f"图像已保存为: {output_filename}")
     print(f"总耗时: {end_time - start_time:.2f} 秒")
     print("-" * 30)
     if collect_boxes:
         return {
+            "image": final_image,
             "region_used": region_used,
             "placed_boxes": placed_boxes,
             "large_region": template_region_claimed,
             "large_boxes": large_boxes,
         }
-    return region_used
+    return {"image": final_image, "region_used": region_used}
 
 
 COMMON_CHARS = (
@@ -418,51 +465,41 @@ def _generate_one_layer_image(
     silent: bool = True,
     collect_boxes: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, list, np.ndarray, list]:
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-        tmp_path = tmp.name
-    try:
-        region_local = None
-        layer_boxes_local = []
-        large_region_local = None
-        large_boxes_local = []
+    region_local = None
+    layer_boxes_local = []
+    large_region_local = None
+    large_boxes_local = []
 
-        # 1:1 生成：直接在指定尺寸画布上渲染，不做后期裁剪/缩放
-        ctx = contextlib.redirect_stdout(io.StringIO()) if silent else contextlib.nullcontext()
-        with ctx:
-            render_ret = create_text_fill_art(
-                large_text=large_text,
-                small_text=small_text,
-                large_font_size=large_font_size,
-                small_font_size=small_font_size,
-                font_path=font_path,
-                output_filename=tmp_path,
-                step_x=step,
-                step_y=step,
-                wrap_after=wrap_after,
-                collect_boxes=collect_boxes,
-                target_width=canvas_width,
-                target_height=canvas_height,
-            )
+    # 1:1 生成：直接在指定尺寸画布上渲染，不做后期裁剪/缩放
+    ctx = contextlib.redirect_stdout(io.StringIO()) if silent else contextlib.nullcontext()
+    with ctx:
+        render_ret = create_text_fill_art(
+            large_text=large_text,
+            small_text=small_text,
+            large_font_size=large_font_size,
+            small_font_size=small_font_size,
+            font_path=font_path,
+            output_filename=None,
+            step_x=step,
+            step_y=step,
+            wrap_after=wrap_after,
+            collect_boxes=collect_boxes,
+            target_width=canvas_width,
+            target_height=canvas_height,
+        )
 
-        if isinstance(render_ret, dict):
-            region_local = render_ret.get("region_used")
-            layer_boxes_local = render_ret.get("placed_boxes", [])
-            large_region_local = render_ret.get("large_region")
-            large_boxes_local = render_ret.get("large_boxes", [])
-        else:
-            region_local = render_ret
+    pil_img = render_ret["image"]
+    img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    region_local = render_ret.get("region_used")
+    layer_boxes_local = render_ret.get("placed_boxes", [])
+    large_region_local = render_ret.get("large_region")
+    large_boxes_local = render_ret.get("large_boxes", [])
 
-        img = _read_image_no_scale(tmp_path)
-        if region_local is None:
-            region_local = np.zeros((canvas_height, canvas_width), dtype=np.uint8)
-        if large_region_local is None:
-            large_region_local = np.zeros((canvas_height, canvas_width), dtype=np.uint8)
-        return img, region_local.astype(bool), layer_boxes_local, large_region_local.astype(bool), large_boxes_local
-    finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+    if region_local is None:
+        region_local = np.zeros((canvas_height, canvas_width), dtype=np.uint8)
+    if large_region_local is None:
+        large_region_local = np.zeros((canvas_height, canvas_width), dtype=np.uint8)
+    return img, region_local.astype(bool), layer_boxes_local, large_region_local.astype(bool), large_boxes_local
 
 
 def _render_big_text_mask(

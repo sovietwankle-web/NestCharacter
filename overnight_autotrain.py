@@ -8,6 +8,9 @@
 """
 
 import argparse
+import contextlib
+import gc
+import io
 import json
 import os
 import random
@@ -182,19 +185,20 @@ class NestCharacterStrictGenerator:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             tmp_path = tmp.name
         try:
-            create_text_fill_art(
-                large_text=large_text,
-                small_text=small_text,
-                large_font_size=large_font_size,
-                small_font_size=small_font_size,
-                font_path=self.font_path,
-                output_filename=tmp_path,
-                step_x=step_x,
-                step_y=step_y,
-                wrap_after=wrap_after,
-                background_color="white",
-                text_color="black",
-            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                create_text_fill_art(
+                    large_text=large_text,
+                    small_text=small_text,
+                    large_font_size=large_font_size,
+                    small_font_size=small_font_size,
+                    font_path=self.font_path,
+                    output_filename=tmp_path,
+                    step_x=step_x,
+                    step_y=step_y,
+                    wrap_after=wrap_after,
+                    background_color="white",
+                    text_color="black",
+                )
             final_image = cv2.imread(tmp_path, cv2.IMREAD_COLOR)
             if final_image is None:
                 raise ValueError(f"原函数已执行但无法读取输出图像: {tmp_path}")
@@ -538,6 +542,8 @@ def train_nesting_stage(
     device: str,
     save_path: Path,
     logger: SimpleLogger,
+    early_stop_patience: int = 0,
+    early_stop_acc: float = 99.9,
 ) -> Dict:
     model = NestedCharCNN(num_classes=num_classes).to(device)
     criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
@@ -547,6 +553,7 @@ def train_nesting_stage(
 
     best_acc = -1.0
     history = {"train_loss": [], "val_loss": [], "val_acc": []}
+    streak = 0
 
     for epoch in range(epochs):
         model.train()
@@ -576,6 +583,21 @@ def train_nesting_stage(
             torch.save(model.state_dict(), save_path)
             logger.info(f"[NEST] 保存最佳模型: {save_path}")
 
+        if early_stop_patience > 0:
+            if val_acc >= early_stop_acc:
+                streak += 1
+            else:
+                streak = 0
+            if streak >= early_stop_patience:
+                logger.info(
+                    f"[NEST] 早停触发：连续 {streak} 个 epoch val_acc>={early_stop_acc:.2f}%"
+                )
+                break
+
+    del model, optimizer, scheduler, scaler
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    gc.collect()
     return {"best_val_acc": best_acc, "history": history, "model_path": str(save_path)}
 
 
@@ -632,6 +654,10 @@ def train_ocr_stage(
             )
             logger.info(f"[OCR ] 保存最佳模型: {save_path}")
 
+    del model, optimizer, scheduler, scaler
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    gc.collect()
     return {"best_val_acc": best_acc, "history": history, "model_path": str(save_path)}
 
 
@@ -792,6 +818,10 @@ def train_composite_stage(
             )
             logger.info(f"[COMP] 保存最佳模型: {save_path}")
 
+    del model, optimizer, scheduler, scaler
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    gc.collect()
     return {"best_score": best_score, "history": history, "model_path": str(save_path)}
 
 
@@ -847,6 +877,8 @@ def run_full_training(args, logger: SimpleLogger, run_dir: Path) -> Dict:
         device=device,
         save_path=nesting_path,
         logger=logger,
+        early_stop_patience=args.nest_early_stop_patience,
+        early_stop_acc=args.nest_early_stop_acc,
     )
 
     ocr_stats = train_ocr_stage(
@@ -952,6 +984,10 @@ def parse_args():
     parser.add_argument("--epochs-ocr", type=int, default=18)
     parser.add_argument("--epochs-composite", type=int, default=16)
     parser.add_argument("--warmup-epochs", type=int, default=3)
+    parser.add_argument("--nest-early-stop-patience", type=int, default=10,
+                        help="NEST 连续多少个 epoch val_acc>=阈值则早停；<=0 关闭")
+    parser.add_argument("--nest-early-stop-acc", type=float, default=99.9,
+                        help="NEST 早停的 val_acc 阈值（百分比）")
     parser.add_argument("--batch-size-nesting", type=int, default=4)
     parser.add_argument("--batch-size-ocr", type=int, default=256)
     parser.add_argument("--num-workers", type=int, default=8)
@@ -969,6 +1005,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     if args.layer_char_min < 0:
         args.layer_char_min = 0
     if args.layer_char_max < 0:

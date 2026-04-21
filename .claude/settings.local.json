@@ -24,7 +24,15 @@
       "Bash(taskkill //F //IM python.exe)",
       "Bash(python3 -c ':*)",
       "Bash(grep -v '^$')",
-      "Bash(wait)"
+      "Bash(wait)",
+      "Read(//c/Users/lizuo/project/ocr/**)",
+      "Bash(grep -rn \"total_mem\" *.py)",
+      "Bash(grep -rn \"total_mem\" *.py *.sh)",
+      "Bash(python3 *)",
+      "Bash(git push *)",
+      "Bash(git fetch *)",
+      "Bash(git pull *)",
+      "Bash(git stash *)"
     ],
     "deny": [],
     "ask": []

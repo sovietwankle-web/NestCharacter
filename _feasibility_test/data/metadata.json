@@ -1,0 +1,47 @@
+{
+  "generator": "generate_dataset_copypaste.py",
+  "source_reference": "NestCharacter.py",
+  "layer2_source": "direct_NestCharacter.py_no_postprocess",
+  "layer_min": 0,
+  "layer_max": 5,
+  "samples_per_class": 2,
+  "canvas_size": 1260,
+  "wrap_after": 6,
+  "base_large_font_size": 200,
+  "depth_scale": 0.7,
+  "small_ratio_min": 0.03,
+  "small_ratio_max": 0.045,
+  "runtime_seed": 42,
+  "classes": {
+    "layer_0": {
+      "train_samples": 1,
+      "val_samples": 0,
+      "test_samples": 1
+    },
+    "layer_1": {
+      "train_samples": 1,
+      "val_samples": 0,
+      "test_samples": 1
+    },
+    "layer_2": {
+      "train_samples": 1,
+      "val_samples": 0,
+      "test_samples": 1
+    },
+    "layer_3": {
+      "train_samples": 1,
+      "val_samples": 0,
+      "test_samples": 1
+    },
+    "layer_4": {
+      "train_samples": 1,
+      "val_samples": 0,
+      "test_samples": 1
+    },
+    "layer_5": {
+      "train_samples": 1,
+      "val_samples": 0,
+      "test_samples": 1
+    }
+  }
+}
