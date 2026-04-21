@@ -284,7 +284,7 @@ class GaussianPyramidAnalyzer:
 
 
 class SEBlock(nn.Module):
-    """Squeeze-and-Excitation注意力模块"""
+    """Squeeze-and-Excitation注意力模块（通道注意力）"""
 
     def __init__(self, channels: int, reduction: int = 16):
         super(SEBlock, self).__init__()
@@ -303,8 +303,28 @@ class SEBlock(nn.Module):
         return x * y.expand_as(x)
 
 
+class SpatialAttention(nn.Module):
+    """CBAM空间注意力：通道方向 avg+max pool → 2→1 大核卷积 → sigmoid。
+    让网络自动聚焦到字符笔画/嵌入字符等高细节区域，忽略大片留白背景。
+    """
+
+    def __init__(self, kernel_size: int = 7):
+        super(SpatialAttention, self).__init__()
+        assert kernel_size % 2 == 1, "kernel_size must be odd"
+        self.conv = nn.Conv2d(2, 1, kernel_size=kernel_size,
+                              padding=kernel_size // 2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        avg_pool = torch.mean(x, dim=1, keepdim=True)
+        max_pool, _ = torch.max(x, dim=1, keepdim=True)
+        concat = torch.cat([avg_pool, max_pool], dim=1)
+        att = self.sigmoid(self.conv(concat))
+        return x * att
+
+
 class ResidualBlock(nn.Module):
-    """带SE注意力的残差块"""
+    """带SE通道注意力 + CBAM空间注意力的残差块"""
 
     def __init__(self, in_channels: int, out_channels: int, stride: int = 1):
         super(ResidualBlock, self).__init__()
@@ -313,6 +333,7 @@ class ResidualBlock(nn.Module):
         self.conv2 = nn.Conv2d(out_channels, out_channels, 3, stride=1, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(out_channels)
         self.se = SEBlock(out_channels)
+        self.spatial_att = SpatialAttention(kernel_size=7)
 
         self.shortcut = nn.Sequential()
         if stride != 1 or in_channels != out_channels:
@@ -325,6 +346,7 @@ class ResidualBlock(nn.Module):
         out = F.relu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
         out = self.se(out)
+        out = self.spatial_att(out)
         out += self.shortcut(x)
         out = F.relu(out)
         return out
