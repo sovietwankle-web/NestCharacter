@@ -702,6 +702,12 @@ def train_composite_stage(
     logger.info(f"[COMP] 从 NEST ckpt 加载 {nest_loaded} 个权重 tensor（backbone + nesting_head）")
     logger.info(f"[COMP] ocr_head 保持随机初始化，由 warmup 阶段从零训练")
 
+    # 加载完立即验证：NEST 子任务应当与单独训练时的 val_acc 一致
+    sanity_loss, sanity_acc = eval_dual(model, nesting_val_loader, device, task="nesting")
+    logger.info(f"[COMP] 加载后 sanity check: nesting_val_acc={sanity_acc:.2f}% loss={sanity_loss:.4f}")
+    if sanity_acc < 80.0:
+        logger.info(f"[COMP] 警告：sanity nesting_acc={sanity_acc:.2f}% 远低于预期，ckpt 可能未正确加载或数据集发生了变化")
+
     nesting_criterion = nn.CrossEntropyLoss(label_smoothing=0.03)
     ocr_criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
 
@@ -741,6 +747,14 @@ def train_composite_stage(
             stage = "joint"
 
         model.train()
+        if epoch < warmup_epochs:
+            # backbone 冻结时，BN running_mean/var 仍会被 train() 模式下流过的 OCR 数据
+            # 污染（OCR 单字图分布 != NEST 多字图分布），导致 NEST 子任务评估崩盘。
+            # 把 backbone 内所有 BN 强制 eval，保留 NEST ckpt 的 running stats。
+            for layer in [model.stem, model.layer1, model.layer2, model.layer3, model.layer4]:
+                for m in layer.modules():
+                    if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+                        m.eval()
         nest_iter = iter(nesting_train_loader)
         ocr_iter = iter(ocr_train_loader)
         steps = max(len(nesting_train_loader), len(ocr_train_loader))
