@@ -32,7 +32,12 @@
       "Bash(git push *)",
       "Bash(git fetch *)",
       "Bash(git pull *)",
-      "Bash(git stash *)"
+      "Bash(git stash *)",
+      "Bash(ls -la C:\\\\\\\\Users\\\\\\\\lizuo\\\\\\\\project\\\\\\\\ocr\\\\\\\\NestCharacter/)",
+      "Bash(awk -F'_' '{print $1}')",
+      "Bash(grep -v \"^$\")",
+      "Bash(git reset *)",
+      "Bash(git status *)"
     ],
     "deny": [],
     "ask": []

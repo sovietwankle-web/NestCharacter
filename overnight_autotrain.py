@@ -684,35 +684,32 @@ def train_composite_stage(
         num_ocr_classes=num_ocr_classes,
     ).to(device)
 
-    # 正确的权重加载顺序：
-    # 1) 先加载 OCR checkpoint 整个模型（backbone + ocr_head + 随机 nesting_head）
-    # 2) 再用 nesting ckpt 的 nesting_head 覆盖
-    # 这样 OCR 训练到 99% 的 {backbone+ocr_head} 配对保留下来，
-    # nesting_head 在 warmup 阶段用 OCR backbone 适应 nesting 任务
-    ocr_ckpt = torch.load(ocr_ckpt_path, map_location=device, weights_only=False)
-    ocr_state = ocr_ckpt["model_state_dict"] if "model_state_dict" in ocr_ckpt else ocr_ckpt
-    current_state = model.state_dict()
-    ocr_loaded = 0
-    for k, v in ocr_state.items():
-        if k in current_state and current_state[k].shape == v.shape:
-            current_state[k] = v
-            ocr_loaded += 1
-    model.load_state_dict(current_state)
-    logger.info(f"[COMP] 从 OCR ckpt 加载 {ocr_loaded} 个权重 tensor（backbone + ocr_head）")
-
-    # 再覆盖 nesting_head（也会覆盖 backbone，但 nesting backbone 未必好于 OCR backbone，
-    # 所以这里只挑 nesting_head 覆盖，保留 OCR 的 backbone 特征）
+    # 权重加载顺序（修正版）：
+    # 1) 先加载 NEST ckpt 全量（backbone + nesting_head），保留训练到 100% 的 NEST 特征
+    # 2) 再只用 OCR ckpt 的 ocr_head 覆盖
+    # 反过来加载会导致 nesting_head 与 OCR backbone 特征不匹配（实测 epoch0 即降至 20%）
     nesting_state = torch.load(nesting_state_path, map_location=device, weights_only=False)
     current_state = model.state_dict()
     nest_loaded = 0
     for old_key, tensor in nesting_state.items():
         # 旧版 NestedCharCNN 保存的是 classifier.* ，映射到 nesting_head.*
         new_key = old_key.replace('classifier.', 'nesting_head.', 1) if old_key.startswith('classifier.') else old_key
-        if new_key.startswith('nesting_head.') and new_key in current_state and current_state[new_key].shape == tensor.shape:
+        if new_key in current_state and current_state[new_key].shape == tensor.shape:
             current_state[new_key] = tensor
             nest_loaded += 1
     model.load_state_dict(current_state)
-    logger.info(f"[COMP] 从 nesting ckpt 仅加载 nesting_head（{nest_loaded} 个 tensor），保留 OCR backbone")
+    logger.info(f"[COMP] 从 NEST ckpt 加载 {nest_loaded} 个权重 tensor（backbone + nesting_head）")
+
+    ocr_ckpt = torch.load(ocr_ckpt_path, map_location=device, weights_only=False)
+    ocr_state = ocr_ckpt["model_state_dict"] if "model_state_dict" in ocr_ckpt else ocr_ckpt
+    current_state = model.state_dict()
+    ocr_loaded = 0
+    for k, v in ocr_state.items():
+        if k.startswith('ocr_head.') and k in current_state and current_state[k].shape == v.shape:
+            current_state[k] = v
+            ocr_loaded += 1
+    model.load_state_dict(current_state)
+    logger.info(f"[COMP] 从 OCR ckpt 仅加载 ocr_head（{ocr_loaded} 个 tensor），保留 NEST backbone")
 
     nesting_criterion = nn.CrossEntropyLoss(label_smoothing=0.03)
     ocr_criterion = nn.CrossEntropyLoss(label_smoothing=0.05)

@@ -33,3 +33,12 @@ runs/
 *.pt
 nohup.out
 run.log
+
+# 比赛提交包（含 PyInstaller 打包出的 exe/dll/zip/视频，体积过大不入库）
+2026047912-参赛总文件夹/
+
+# MS Office 编辑时的临时锁文件
+~$*
+
+# 日志输出
+logs/
