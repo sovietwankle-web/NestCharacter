@@ -686,8 +686,9 @@ def train_composite_stage(
 
     # 权重加载顺序（修正版）：
     # 1) 先加载 NEST ckpt 全量（backbone + nesting_head），保留训练到 100% 的 NEST 特征
-    # 2) 再只用 OCR ckpt 的 ocr_head 覆盖
-    # 反过来加载会导致 nesting_head 与 OCR backbone 特征不匹配（实测 epoch0 即降至 20%）
+    # 2) ocr_head 不从 OCR ckpt 加载——OCR ckpt 的 ocr_head 是配套 OCR backbone 训出来的，
+    #    嫁接到 NEST backbone 上特征分布不对，等价随机权重还更糟（实测 OCR acc=0.66%）。
+    #    保持随机初始化，由更长的 warmup 在冻结 backbone 上拟合。
     nesting_state = torch.load(nesting_state_path, map_location=device, weights_only=False)
     current_state = model.state_dict()
     nest_loaded = 0
@@ -699,17 +700,7 @@ def train_composite_stage(
             nest_loaded += 1
     model.load_state_dict(current_state)
     logger.info(f"[COMP] 从 NEST ckpt 加载 {nest_loaded} 个权重 tensor（backbone + nesting_head）")
-
-    ocr_ckpt = torch.load(ocr_ckpt_path, map_location=device, weights_only=False)
-    ocr_state = ocr_ckpt["model_state_dict"] if "model_state_dict" in ocr_ckpt else ocr_ckpt
-    current_state = model.state_dict()
-    ocr_loaded = 0
-    for k, v in ocr_state.items():
-        if k.startswith('ocr_head.') and k in current_state and current_state[k].shape == v.shape:
-            current_state[k] = v
-            ocr_loaded += 1
-    model.load_state_dict(current_state)
-    logger.info(f"[COMP] 从 OCR ckpt 仅加载 ocr_head（{ocr_loaded} 个 tensor），保留 NEST backbone")
+    logger.info(f"[COMP] ocr_head 保持随机初始化，由 warmup 阶段从零训练")
 
     nesting_criterion = nn.CrossEntropyLoss(label_smoothing=0.03)
     ocr_criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
